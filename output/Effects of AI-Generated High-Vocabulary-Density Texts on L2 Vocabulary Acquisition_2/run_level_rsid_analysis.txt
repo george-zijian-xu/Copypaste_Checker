@@ -1,6 +1,0 @@
---- Run-Level w:rsidRPr Analysis (Grouped) ---
-
-Found and analyzed 0 individual <w:r> elements with a w:rsidRPr attribute.
-NOTE: Contiguous runs with the same rsidRPr are grouped into a single entry below.
-
-No runs with a w:rsidRPr attribute were found.
