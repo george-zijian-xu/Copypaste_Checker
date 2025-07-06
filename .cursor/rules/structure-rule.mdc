@@ -1,0 +1,133 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# Architectural Roles and Responsibility Boundaries
+
+This document outlines the role of each directory in the proposed full-stack application structure. Understanding these boundaries is crucial for maintaining a clean, scalable, and maintainable codebase.
+
+---
+
+## Root Level: `/copypaste-checker-app`
+
+* **Role**: The monorepo root. It manages the entire project, including shared development dependencies and scripts that orchestrate both the frontend and backend.
+* **Responsibility Boundary**: This level should only contain configuration files that are relevant to the entire project workspace. It should not contain any source code for either the frontend or backend.
+    * **Correct**: A `package.json` with a `concurrently` script to run both frontend and backend dev servers. The `pnpm-workspace.yaml` file defining the packages.
+    * **Incorrect**: Placing a `server.py` file or a React component directly in the root folder.
+
+---
+
+## Package Level: `/packages`
+
+* **Role**: A container directory that holds the distinct, self-contained applications of the monorepo. This clearly separates the frontend and backend projects.
+* **Responsibility Boundary**: This directory only serves as an organizational folder. It contains the `frontend` and `backend` folders and nothing else.
+    * **Correct**: The folder contains only two subdirectories: `frontend` and `backend`.
+    * **Incorrect**: Adding a `shared-utils` folder here without defining it as a separate package in the workspace. Logic shared between frontend and backend should be handled carefully, often by creating a dedicated shared package.
+
+---
+
+## Backend: `/packages/backend`
+
+### `server.py`
+
+* **Role**: The main entry point for the backend application. Its job is to initialize the web server (e.g., FastAPI), load configurations, apply middleware, and register the API routes.
+* **Responsibility Boundary**: It assembles the application but does not implement any specific endpoint logic.
+    * **Correct**: `server.py` imports the router from `src/api/document_routes.py` and includes it in the main FastAPI app instance using `app.include_router()`.
+    * **Incorrect**: Defining an API endpoint directly in `server.py` like `@app.get("/upload")`. All endpoint definitions belong in the `src/api` directory.
+
+### `src/api` (or `routes`)
+
+* **Role**: The HTTP layer. This folder contains all the API endpoint definitions. Its sole responsibility is to handle incoming requests and outgoing responses.
+* **Responsibility Boundary**: It parses requests, validates incoming data (like path parameters or request bodies), calls the appropriate service layer function, and formats the response. It should contain no business logic.
+    * **Correct**: An endpoint function receives a file, checks if the file type is `.docx`, and if so, passes the file object to a function in the `services` layer. It then returns the result from the service as a JSON response.
+    * **Incorrect**: The endpoint function itself contains the logic to unzip the docx file, parse the XML, and analyze the RSIDs. This is business logic and belongs in the `services` layer.
+
+### `src/services`
+
+* **Role**: The business logic layer. This is the heart of the backend, orchestrating the core functionality of the application.
+* **Responsibility Boundary**: It implements the application's features by coordinating calls to utilities, data models, and external services. It knows *what* the application does, but not *how* to handle an HTTP request.
+    * **Correct**: A `document_service.py` file has an `analyze_document` function that takes a file path, calls a `utils` function to unzip it, calls another `utils` function to parse the XML, and assembles the results.
+    * **Incorrect**: A service function directly accessing the database connection object. It should go through a data model or repository layer (`src/models`). Also, a service function should not return an `HTTPException`; that's the responsibility of the `api` layer.
+
+### `src/models`
+
+* **Role**: The data layer. This folder defines the shape of your data, both for your application's logic (using Pydantic, for example) and for your database schemas (using an ODM like Beanie for MongoDB).
+* **Responsibility Boundary**: It is concerned with data structure, validation, and interaction with the database (CRUD operations).
+    * **Correct**: A `DocumentModel` class is defined with fields like `fileName: str` and `analysis: list`. It might have static methods like `DocumentModel.find_by_id(doc_id)` to query the database.
+    * **Incorrect**: A model function contains logic to calculate something based on its fields (e.g., a function to calculate the percentage of copied text). This is business logic and belongs in the `services` layer.
+
+### `src/config`
+
+* **Role**: Manages all configuration for the application. This includes database connection strings, secret keys, and settings loaded from environment variables.
+* **Responsibility Boundary**: Its only job is to load and provide configuration values to the rest of the application.
+    * **Correct**: A `database.py` file reads a `DATABASE_URL` from the environment, creates a database client instance, and provides a function `get_db_connection()` for other parts of the app to use.
+    * **Incorrect**: Hardcoding a database connection string directly in a service file. All such values should be centralized in `config`.
+
+### `src/middleware`
+
+* **Role**: Handles cross-cutting concerns that apply to multiple endpoints. It intercepts requests before they hit the route handlers and can also process responses before they are sent.
+* **Responsibility Boundary**: It should contain generic logic applicable across the application, like authentication, logging, or adding specific headers to all responses.
+    * **Correct**: Middleware that checks for a JWT in the request header. If the token is valid, it attaches the user object to the request. If not, it returns a 401 Unauthorized response immediately.
+    * **Incorrect**: Middleware that performs logic specific to a single endpoint, like parsing a docx file. That logic belongs in the service for that endpoint.
+
+### `src/utils`
+
+* **Role**: A library of pure, reusable helper functions that perform single, well-defined tasks.
+* **Responsibility Boundary**: These functions should be generic and stateless. They take an input, produce an output, and have no side effects (like talking to a database or an external API).
+    * **Correct**: A function `extract_text_from_xml(xml_content: str) -> str` that takes XML content and returns the extracted text.
+    * **Incorrect**: A utility function that connects to the database to log its own activity. This creates a side effect and violates the separation of concerns.
+
+---
+
+## Frontend: `/packages/frontend`
+
+### `src/app`
+
+* **Role**: The page and layout layer, based on the Next.js App Router convention. It defines the URL structure of your application and assembles pages by composing components.
+* **Responsibility Boundary**: Its primary job is routing and layout. Page files (`page.tsx`) should be kept lean, primarily composing feature components and passing data to them from hooks.
+    * **Correct**: `app/(main)/page.tsx` imports the `FileUpload` and `ResultsDisplay` components, calls the `useDocumentAnalysis` hook to get state and handlers, and passes them down as props.
+    * **Incorrect**: The `page.tsx` file contains a large `useEffect` block that directly uses `fetch` to call the backend and manages the loading/error state with multiple `useState` calls. This logic should be encapsulated in a custom hook (`/hooks`).
+
+### `src/components`
+
+* **Role**: Contains all the React components, which are the building blocks of the UI.
+* **Responsibility Boundary**: Components are responsible for rendering the UI. They are split into `ui` (generic, reusable elements like `<Button />`) and `feature` (larger components specific to a feature, like `<FileUpload />`). They should receive data and callbacks via props and should not fetch their own data. It should stay logic free at all times as we should not be browsing this folder to check for logic.
+    * **Correct**: A `<Button>` component in `/ui` that accepts props like `onClick` and `variant`. A `<FileUpload>` component in `/feature` that takes an `onFileSelect` prop.
+    * **Incorrect**: The `<FileUpload>` component directly importing `axios` and making an API call inside its own `onChange` handler. This makes the component hard to reuse and test.
+
+### `src/lib/api` (or `services`)
+
+* **Role**: The network layer. This folder centralizes all communication with the backend API.
+* **Responsibility Boundary**: It is the only part of the frontend that should know about the backend's URL structure and the specifics of making HTTP requests (e.g., using `axios` or `fetch`).
+    * **Correct**: An `api.ts` file exports an async function `uploadDocument(file: File)` which constructs a `FormData` object and makes a POST request to `/api/documents/upload`.
+    * **Incorrect**: A component or a hook directly using `fetch('http://localhost:8000/...')`. All API calls must be routed through this centralized layer.
+
+### `src/store`
+
+* **Role**: The state management layer. It provides a global, centralized state for the application using a library like Zustand.
+* **Responsibility Boundary**: It holds state that needs to be accessed by multiple, potentially distant components (e.g., user authentication status, loading states, application-wide notifications).
+    * **Correct**: A `document_store.ts` that holds `analysisResults`, `isLoading`, and `error` state, along with actions to update them.
+    * **Incorrect**: Storing state that is only used by a single component and its direct children (e.g., the value of a single form input). For local state, React's `useState` is more appropriate.
+
+### `src/hooks`
+
+* **Role**: Encapsulates and reuses component logic. Custom hooks are the primary way to connect UI interaction to state management and API calls.
+* **Responsibility Boundary**: A hook orchestrates frontend logic. It can call the store, the API layer, and manage local state, providing a clean interface to the UI components.
+    * **Correct**: `useDocumentAnalysis` imports the `useDocumentStore` and the `uploadDocument` API function. It exposes a single `handleFileSelect` function that handles setting the loading state, calling the API, and updating the store with the results or an error.
+    * **Incorrect**: A custom hook that contains JSX and renders a piece of the UI. Hooks are for logic only; rendering is the job of components.
+
+### `src/types`
+
+* **Role**: Provides a single source of truth for all TypeScript type and interface definitions used throughout the frontend.
+* **Responsibility Boundary**: It only contains type definitions. It should not contain any executable code.
+    * **Correct**: An `index.ts` file that exports an interface `AnalysisResults` which mirrors the shape of the JSON object returned by the backend API.
+    * **Incorrect**: Placing a utility function or a constant variable inside a type definition file.
+
+### `src/utils`
+
+* **Role**: A library of pure, reusable helper functions for the frontend, similar to its backend counterpart.
+* **Responsibility Boundary**: Contains stateless functions that perform common tasks like formatting dates, validating form inputs, or manipulating strings.
+    * **Correct**: A function `formatFileSize(bytes: number): string` that converts a file size in bytes to a human-readable string like "1.2 MB".
+
+    * **Incorrect**: A utility function that calls `useDocumentStore()` to get or set global state. If a function needs to interact with the application's state, it should be part of a custom hook, not a generic utility.
