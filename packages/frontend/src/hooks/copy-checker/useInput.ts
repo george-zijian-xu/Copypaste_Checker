@@ -5,25 +5,12 @@ import { useDocumentAnalysis } from "@/hooks/use-document-analysis";
 
 export const MAX_CHARACTERS = 30000;
 
-interface UsePlagiarismInputReturn {
-  file: File | null;
-  textInput: string;
-  charCount: number;
-  getRootProps: ReturnType<typeof useDropzone>["getRootProps"];
-  getInputProps: ReturnType<typeof useDropzone>["getInputProps"];
-  isDragActive: boolean;
-  handleTextChange: (event: React.ChangeEvent<HTMLTextAreaElement>) => void;
-  handleFileUploadClick: () => void;
-  handleFileSelect: (event: React.ChangeEvent<HTMLInputElement>) => void;
-  handleScanClick: () => void;
-}
-
-export function usePlagiarismInput(): UsePlagiarismInputReturn {
+export function useInput() {
   const { file, setFile, setStatus, setProgress } = useDocumentStore();
   const { handleSubmit } = useDocumentAnalysis();
 
-  const [textInput, setTextInput] = useState<string>("");
-  const [charCount, setCharCount] = useState<number>(0);
+  const [textInput, setTextInput] = useState("");
+  const [charCount, setCharCount] = useState(0);
 
   const onDrop = useCallback(
     (acceptedFiles: File[]) => {
@@ -47,8 +34,8 @@ export function usePlagiarismInput(): UsePlagiarismInputReturn {
     },
   });
 
-  const handleTextChange = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const text = event.target.value;
+  const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const text = e.target.value;
     if (text.length <= MAX_CHARACTERS) {
       setTextInput(text);
       setCharCount(text.length);
@@ -58,14 +45,12 @@ export function usePlagiarismInput(): UsePlagiarismInputReturn {
 
   const handleFileUploadClick = () => {
     const fileInput = document.getElementById("file-upload-input");
-    if (fileInput) {
-      fileInput.click();
-    }
+    fileInput?.click();
   };
 
-  const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
-    if (event.target.files && event.target.files.length > 0) {
-      setFile(event.target.files[0]);
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      setFile(e.target.files[0]);
       setTextInput("");
     } else {
       setFile(null);
@@ -74,14 +59,10 @@ export function usePlagiarismInput(): UsePlagiarismInputReturn {
 
   const handleScanClick = () => {
     if (textInput.trim() || file) {
-      const input = textInput.trim() || file;
-      if (input) {
-        handleSubmit(input);
-      }
+      handleSubmit(textInput.trim() || file!);
     }
   };
 
-  // Reset relevant state when component using this hook unmounts
   useEffect(() => {
     return () => {
       setFile(null);
@@ -105,14 +86,3 @@ export function usePlagiarismInput(): UsePlagiarismInputReturn {
     handleScanClick,
   };
 } 
- 
- 
- 
- 
- 
- 
- 
- 
- 
- 
- 

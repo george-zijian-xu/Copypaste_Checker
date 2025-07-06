@@ -1,8 +1,8 @@
 "use client";
 
-import { PlagiarismInputSection } from "@/components/feature/plagiarism-input-section";
-import { FeatureCardsSection } from "@/components/feature/feature-cards-section";
-import { PlagiarismTabsSection } from "@/components/feature/plagiarism-tabs-section";
+import { InputSection } from "@/components/feature/copy-checker";
+import { CardsSection } from "@/components/feature/copy-checker";
+import { TabsSection } from "@/components/feature/copy-checker";
 import { useDocumentStore } from "@/store/document-store";
 import { Progress } from "@/components/ui/progress";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -25,7 +25,7 @@ export default function PlagiarismCheckerPage() {
       {/* Main Input and Guide Section */}
       <section className="mb-24">
         {/* Increased bottom margin */}
-        <PlagiarismInputSection />
+        <InputSection />
         {(status === "uploading" || status === "analyzing") && (
           <div className="mt-8 space-y-2 text-center">
             <Progress value={progress} className="w-full max-w-md mx-auto" />
@@ -61,7 +61,7 @@ export default function PlagiarismCheckerPage() {
             it easy to express your thoughts in a way that's clear, original, and full of academic integrity.
           </p>
         </div>
-        <FeatureCardsSection />
+        <CardsSection />
       </section>
 
       {/* Tabbed Section */}
@@ -76,7 +76,7 @@ export default function PlagiarismCheckerPage() {
             so you're a step ahead at school and when entering the workforce.
           </p>
         </div>
-        <PlagiarismTabsSection />
+        <TabsSection />
       </section>
     </div>
   );

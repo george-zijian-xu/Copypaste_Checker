@@ -1,15 +1,17 @@
-import type React from "react"
-import { UploadCloud, FileText } from "lucide-react"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { useFileUpload } from "@/hooks/use-file-upload"
+"use client";
 
-interface FileUploadProps {
-  onFileChange: (file: File | null) => void
-  onSubmit: () => void
+import type React from "react";
+import { UploadCloud, FileText } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { useUpload } from "@/hooks/copy-checker";
+
+interface UploadProps {
+  onFileChange: (file: File | null) => void;
+  onSubmit: () => void;
 }
 
-export function FileUpload({ onFileChange, onSubmit }: FileUploadProps) {
+export default function Upload({ onFileChange, onSubmit }: UploadProps) {
   const {
     selectedFile,
     isDragActive,
@@ -17,13 +19,13 @@ export function FileUpload({ onFileChange, onSubmit }: FileUploadProps) {
     getInputProps,
     handleFileSelect,
     handleRemoveFile,
-  } = useFileUpload(onFileChange)
+  } = useUpload(onFileChange);
 
   return (
-    <div className="flex items-center justify-center w-full">
+    <div className="space-y-6">
       <div
         {...getRootProps()}
-        className="flex flex-col items-center justify-center w-full p-6 border-2 border-dashed border-gray-300 rounded-lg cursor-pointer bg-gray-50 hover:border-gray-400 transition-colors"
+        className="flex flex-col items-center justify-center p-6 border-2 border-dashed border-gray-300 rounded-lg cursor-pointer hover:border-gray-400 transition-colors duration-200"
       >
         <Input {...getInputProps()} id="file-upload" className="hidden" />
         <UploadCloud className="h-12 w-12 text-gray-400" />
@@ -34,7 +36,7 @@ export function FileUpload({ onFileChange, onSubmit }: FileUploadProps) {
       </div>
 
       {selectedFile && (
-        <div className="flex items-center justify-between p-3 border border-gray-200 rounded-md bg-gray-50 mt-4 w-full">
+        <div className="flex items-center justify-between p-3 border border-gray-200 rounded-md bg-gray-50">
           <div className="flex items-center space-x-2">
             <FileText className="h-5 w-5 text-gray-500" />
             <span className="text-sm font-medium text-gray-700">{selectedFile.name}</span>
@@ -46,11 +48,11 @@ export function FileUpload({ onFileChange, onSubmit }: FileUploadProps) {
         </div>
       )}
 
-      <div className="flex justify-center w-full mt-6">
+      <div className="flex justify-center">
         <Button onClick={onSubmit} disabled={!selectedFile} className="w-full sm:w-auto">
           Upload Document
         </Button>
       </div>
     </div>
-  )
+  );
 } 

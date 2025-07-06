@@ -1,7 +1,7 @@
 import { useCallback, useState } from "react";
 import { useDropzone } from "react-dropzone";
 
-export function useFileUpload(onFileChange: (file: File | null) => void) {
+export function useUpload(onFileChange: (file: File | null) => void) {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
 
   const onDrop = useCallback(
@@ -14,13 +14,10 @@ export function useFileUpload(onFileChange: (file: File | null) => void) {
     [onFileChange]
   );
 
-  const {
-    getRootProps,
-    getInputProps,
-    isDragActive,
-  } = useDropzone({
+  const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
     multiple: false,
+    noClick: true,
     accept: {
       "application/pdf": [".pdf"],
       "application/msword": [".doc"],
@@ -52,4 +49,4 @@ export function useFileUpload(onFileChange: (file: File | null) => void) {
     handleFileSelect,
     handleRemoveFile,
   };
-} 
+}

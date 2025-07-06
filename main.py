@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+# backend/src/main.py
 """
 Main entry point for the Word Formatter pipeline.
 Orchestrates the unzipping and analysis of a .docx file.

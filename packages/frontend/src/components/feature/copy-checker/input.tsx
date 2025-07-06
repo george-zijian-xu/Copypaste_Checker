@@ -10,9 +10,9 @@ import {
 } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
-import { usePlagiarismInput, MAX_CHARACTERS } from "@/hooks/use-plagiarism-input";
+import { useInput, MAX_CHARACTERS } from "@/hooks/copy-checker";
 
-export function PlagiarismInputSection() {
+export default function InputSection() {
   const {
     file,
     textInput,
@@ -23,7 +23,7 @@ export function PlagiarismInputSection() {
     handleFileUploadClick,
     handleFileSelect,
     handleScanClick,
-  } = usePlagiarismInput();
+  } = useInput();
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
@@ -93,8 +93,7 @@ export function PlagiarismInputSection() {
             <span className="font-semibold">Step 2:</span> Click to scan for plagiarism.
           </p>
           <p>
-            <span className="font-semibold">Step 3:</span> Review the results for instances of potential plagiarism,
-            plus additional writing issues.
+            <span className="font-semibold">Step 3:</span> Review the results for instances of potential plagiarism, plus additional writing issues.
           </p>
         </CardContent>
         <CardFooter className="pt-4">

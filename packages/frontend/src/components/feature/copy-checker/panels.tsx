@@ -1,6 +1,6 @@
 import Image from "next/image";
 
-interface TabContentWithImageAndTextProps {
+interface PanelProps {
   imageSrc: string;
   imageAlt: string;
   textBoxTitle: string;
@@ -8,13 +8,13 @@ interface TabContentWithImageAndTextProps {
   buttonText?: string;
 }
 
-export function TabContentWithImageAndText({
+export default function ImagePanel({
   imageSrc,
   imageAlt,
   textBoxTitle,
   textBoxContent,
   buttonText,
-}: TabContentWithImageAndTextProps) {
+}: PanelProps) {
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 gap-8 items-center pt-8">
       <div className="relative w-full h-auto flex justify-center">
@@ -41,4 +41,4 @@ export function TabContentWithImageAndText({
       </div>
     </div>
   );
-} 
+}
