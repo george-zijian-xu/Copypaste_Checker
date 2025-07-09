@@ -5,18 +5,19 @@ run_level_rsid_analysis.py
 Analyzes a Word document's XML to identify and categorize revision markers
 at the run (<w:r>) level, focusing specifically on w:rsidRPr.
 
-This version incorporates advanced logic:
-1.  It groups contiguous runs with the same w:rsidRPr to treat them as a
-    single logical change.
-2.  It intelligently finds the last preceding run containing text (<w:t>) to
-    establish a more accurate "before" state for comparison, leading to
-    a more meticulous and robust analysis.
+This version has been refactored to:
+1.  Output a JSON object containing a list of "highlights" with start/end
+    character offsets relative to the full text.
+2.  Use a centralized text extractor to ensure offsets are accurate.
+3.  Incorporate advanced logic to group contiguous runs and differentiate
+    font face changes from font hint changes.
 """
 import sys
+import json
 from lxml import etree as ET
 from collections import defaultdict
 
-# Namespace for WordprocessingML
+# Namespace for WordprocessingML is now defined locally
 NS = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
 
 def get_properties_dict(rpr_element):
@@ -36,16 +37,13 @@ def diff_properties(base_props, current_props, prop_definitions):
         base_val = base_props.get(key)
         current_val = current_props.get(key)
 
-        # Special handling for <w:rFonts>. It can specify either a concrete face (ascii/"ascii")
-        # or only a font *hint* (e.g. w:hint="eastAsia"). We want separate, meaningful
-        # messages for each case instead of the generic 'Font Change (Face: N/A)'.
-        if key.rsplit('}', 1)[-1] == 'rFonts' and current_val is not None:
+        # Special handling for <w:rFonts> to distinguish between a face and hint change.
+        if key.endswith('}rFonts') and current_val is not None:
             base_ascii = (base_val or {}).get(f'{{{NS["w"]}}}ascii')
             base_hint  = (base_val or {}).get(f'{{{NS["w"]}}}hint')
             curr_ascii = current_val.get(f'{{{NS["w"]}}}ascii')
             curr_hint  = current_val.get(f'{{{NS["w"]}}}hint')
 
-            # If the property is entirely new
             if base_val is None:
                 if curr_ascii:
                     reasons.append(f"Formatting: Font Change (Face: {curr_ascii})")
@@ -53,21 +51,17 @@ def diff_properties(base_props, current_props, prop_definitions):
                     reasons.append(f"Formatting: Font Hint Change (Hint: {curr_hint})")
                 else:
                     reasons.append("Formatting: Font Change (Face: N/A)")
-            # If the property existed before, report actual differences
             else:
                 if base_ascii != curr_ascii:
                     reasons.append(f"Formatting: Font Change (Face: {curr_ascii or 'N/A'})")
                 if base_hint != curr_hint:
                     reasons.append(f"Formatting: Font Hint Change (Hint: {curr_hint or 'N/A'})")
-            # Skip the generic handling for rFonts since we've covered it
             continue
 
         if current_val is not None and base_val is None:
-            # Property was added
             val = current_val.get(attr_key, 'N/A') if attr_key else ''
             reasons.append(reason_template.format(val).strip())
         elif current_val is not None and base_val is not None:
-            # Property might have changed
             if attr_key and base_val.get(attr_key) != current_val.get(attr_key):
                 val = current_val.get(attr_key, 'N/A')
                 reasons.append(reason_template.format(val).strip())
@@ -80,34 +74,35 @@ def find_effective_prior_properties(run_element):
     """
     base_props = {}
     paragraph = run_element.getparent()
-
-    # Start with the paragraph's default run properties, if they exist
     if paragraph is not None and paragraph.tag == f'{{{NS["w"]}}}p':
         p_rpr = paragraph.find('w:pPr/w:rPr', namespaces=NS)
         base_props.update(get_properties_dict(p_rpr))
 
-    # Search backwards from the current run for the last one with text
     current = run_element.getprevious()
     while current is not None:
         if current.tag == f'{{{NS["w"]}}}r' and current.find('w:t', namespaces=NS) is not None:
-            # Found the last relevant run. Its properties are our base.
             prev_rpr = current.find('w:rPr', namespaces=NS)
             base_props.update(get_properties_dict(prev_rpr))
-            return base_props # Exit once found
+            return base_props
         current = current.getprevious()
-
     return base_props
 
 def analyze_document_runs(document_xml_path):
     """
-    Parses document.xml, groups contiguous runs with the same w:rsidRPr,
-    and analyzes them to determine the cause of the revision.
+    Parses document.xml to extract plain text and identify revision markers.
+    
+    This function is self-contained: it generates the text and a list of
+    highlights with character offsets in a single pass, ensuring that the
+    offsets are always correct relative to the generated text.
+
+    Returns:
+        A tuple: (full_text: str, highlights: list)
     """
     try:
         doc_tree = ET.parse(document_xml_path)
     except (ET.XMLSyntaxError, FileNotFoundError) as e:
-        print(f"  Error processing document file: {e}")
-        return None, 0
+        print(f"  Error processing document file: {e}", file=sys.stderr)
+        return "", []
 
     prop_definitions = {
         f'{{{NS["w"]}}}b': ("Formatting: Bold", None),
@@ -124,84 +119,91 @@ def analyze_document_runs(document_xml_path):
         f'{{{NS["w"]}}}rStyle': ("Property: Character Style Applied (Style: {0})", f'{{{NS["w"]}}}val'),
     }
 
-    analysis_map = defaultdict(list)
-    total_rsidrpr_runs = 0
+    highlights = []
+    text_parts = []
 
-    # Iterate through paragraphs to handle run grouping correctly
-    for p_element in doc_tree.xpath("//w:p", namespaces=NS):
+    # Use XPath to process only paragraphs outside of tables
+    paragraphs = doc_tree.xpath(".//w:p[not(ancestor::w:tbl)]", namespaces=NS)
+
+    for p_element in paragraphs:
         runs = p_element.xpath("./w:r", namespaces=NS)
         i = 0
         while i < len(runs):
             run = runs[i]
+            
+            # --- Text Extraction and Offset Calculation ---
+            # Calculate current position before adding new text
+            current_pos = len("".join(text_parts))
+            run_text_parts = [t.text or "" for t in run.xpath('.//w:t', namespaces=NS)]
+            run_text = "".join(run_text_parts)
+
             rsid_rpr = run.get(f'{{{NS["w"]}}}rsidRPr')
 
             if not rsid_rpr:
+                text_parts.append(run_text)
                 i += 1
                 continue
 
-            total_rsidrpr_runs += 1
             # --- Grouping Logic ---
             group = [run]
+            group_text_parts = run_text_parts
             j = i + 1
             while j < len(runs) and runs[j].get(f'{{{NS["w"]}}}rsidRPr') == rsid_rpr:
-                group.append(runs[j])
-                total_rsidrpr_runs += 1
+                next_run = runs[j]
+                next_text_parts = [t.text or "" for t in next_run.xpath('.//w:t', namespaces=NS)]
+                group_text_parts.extend(next_text_parts)
+                group.append(next_run)
                 j += 1
+            
+            full_group_text = "".join(group_text_parts)
+            text_parts.append(full_group_text)
             
             # --- Analysis of the Group ---
             first_run_in_group = group[0]
             base_props = find_effective_prior_properties(first_run_in_group)
-            
             current_rpr = first_run_in_group.find('w:rPr', namespaces=NS)
             current_props = get_properties_dict(current_rpr)
-            
             reasons = diff_properties(base_props, current_props, prop_definitions)
             
-            # Combine text from all runs in the group
-            full_text = "".join(
-                "".join(r.xpath('.//w:t/text()', namespaces=NS)) for r in group
-            ).strip()
+            if not reasons and full_group_text:
+                reasons.append("No property change detected")
 
-            if not reasons:
-                reasons.append("No property change detected") #(likely a split run or style refresh)
-
-            analysis_map[rsid_rpr].append({
-                "text": full_text or "[No Text in Run(s)]",
-                "reasons": reasons
-            })
-            
-            # Advance the main loop past the processed group
+            if reasons:
+                start = current_pos
+                end = start + len(full_group_text)
+                for reason in reasons:
+                    highlights.append({
+                        "start": start,
+                        "end": end,
+                        "category": reason,
+                        "rsid": rsid_rpr,
+                    })
             i = j
+        
+        # Add a newline between paragraphs
+        text_parts.append("\n")
 
-    return analysis_map, total_rsidrpr_runs
+    # Join all parts, but remove the final extraneous newline
+    full_text = "".join(text_parts).rstrip("\n")
+
+    return full_text, highlights
 
 def main():
     if len(sys.argv) != 3:
-        print("Usage: python run_level_rsid_analysis.py <document.xml> <output.txt>")
+        print("Usage: python run_level_rsid_analysis.py <document.xml> <output.json>", file=sys.stderr)
         sys.exit(1)
         
     document_xml_path, output_path = sys.argv[1:3]
     
-    analysis_results, run_count = analyze_document_runs(document_xml_path)
+    full_text, analysis_results = analyze_document_runs(document_xml_path)
+    
+    output_data = {
+        "sourceText": full_text,
+        "highlights": analysis_results
+    }
     
     with open(output_path, 'w', encoding='utf-8') as f:
-        f.write("--- Run-Level w:rsidRPr Analysis (Grouped) ---\n\n")
-        f.write(f"Found and analyzed {run_count} individual <w:r> elements with a w:rsidRPr attribute.\n")
-        f.write("NOTE: Contiguous runs with the same rsidRPr are grouped into a single entry below.\n\n")
-        
-        if not analysis_results:
-            f.write("No runs with a w:rsidRPr attribute were found.\n")
-            return
-
-        for rsid in sorted(analysis_results.keys()):
-            f.write(f"RSID: {rsid}\n")
-            f.write("-" * 25 + "\n")
-            for entry in analysis_results[rsid]:
-                f.write(f"  Combined Text: \"{entry['text']}\"\n")
-                f.write(f"  Identified Change(s):\n")
-                for reason in entry['reasons']:
-                    f.write(f"    - {reason}\n")
-            f.write("\n")
+        json.dump(output_data, f, indent=2)
 
     print(f"  Run-level analysis results written to '{output_path}'.")
 

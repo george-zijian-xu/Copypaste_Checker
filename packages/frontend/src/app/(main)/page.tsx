@@ -15,10 +15,9 @@ export default function PlagiarismCheckerPage() {
     <div className="w-full max-w-6xl mx-auto px-4 py-12 space-y-16">
       {/* Hero Section */}
       <section className="text-center space-y-4">
-        <h1 className="text-5xl font-bold tracking-tight text-gray-900">Plagiarism Checker</h1>
+        <h1 className="text-5xl font-bold tracking-tight text-gray-900">Copy Forensics</h1>
         <p className="text-lg text-gray-600 max-w-2xl mx-auto">
-          Ensure every word is your own with Grammarly's AI-powered plagiarism checker, which uses advanced AI to detect
-          plagiarism in your text and check for other writing issues.
+        Uncover every single paste event with Word's own revision metadata—no black-box guesses, just clear evidence of what was pasted.
         </p>
       </section>
 
@@ -54,18 +53,18 @@ export default function PlagiarismCheckerPage() {
         {/* Added grey background and padding */}
         <div className="text-center space-y-4">
           <h2 className="text-4xl font-bold tracking-tight text-gray-900">
-            Make the grade with our AI plagiarism checker
+            Detect Plagiarism with Explainable Analysis
           </h2>
           <p className="text-lg text-gray-600 max-w-3xl mx-auto">
-            Your ideas are unique, and your writing should reflect that. Grammarly's AI-powered plagiarism detector makes
-            it easy to express your thoughts in a way that's clear, original, and full of academic integrity.
+            Our engine parses WordprocessingML revision IDs to pinpoint each paste action. 
+            You get exact character spans, raw RSID trails, and an audit-ready report you can defend.
           </p>
         </div>
         <CardsSection />
       </section>
 
       {/* Tabbed Section */}
-      <section className="space-y-8">
+      {/* <section className="space-y-8">
         <div className="text-center space-y-4">
           <h2 className="text-4xl font-bold tracking-tight text-gray-900">
             Beyond plagiarism detection: Speed up your work
@@ -77,7 +76,7 @@ export default function PlagiarismCheckerPage() {
           </p>
         </div>
         <TabsSection />
-      </section>
+      </section> */}
     </div>
   );
 } 

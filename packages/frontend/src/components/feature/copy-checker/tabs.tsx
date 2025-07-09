@@ -1,7 +1,7 @@
 "use client";
 
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import ImagePanel from "./panel";
+import ImagePanel from "./panels";
 
 export default function TabsSection() {
   return (

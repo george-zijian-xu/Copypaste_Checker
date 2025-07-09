@@ -8,9 +8,9 @@ import type React from "react";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "Plagiarism Checker",
+  title: "Copy Forensics",
   description:
-    "Ensure every word is your own with Grammarly's AI-powered plagiarism checker.",
+    "Uncover every single paste event with Word's own revision metadata—no black-box guesses, just clear evidence of what was pasted."
 };
 
 export default function RootLayout({

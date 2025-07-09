@@ -22,20 +22,20 @@ export default function CardsSection() {
   const features = [
     {
       icon: ScanSearch,
-      title: "Instantly find plagiarism by pasting or uploading your research paper, essay, or article.",
+      title: "Sharp-Detection: Identify every one-shot paste at the character level using the document’s internal RSID timestamps.",
     },
     {
       icon: FileCheck,
-      title: "Quickly ensure integrity by checking your work against billions of web pages with one click.",
+      title: "Noise-Less: Automatically filter out simple formatting or style edits, leaving pure paste events.",
     },
     {
       icon: Lightbulb,
-      title: "Get an originality score for your document to see how unique your ideas are.",
+      title: "Audit-Friendly: Export raw XML snippets plus plain-English summaries for each highlight, perfect for appeals and compliance.",
     },
     {
       icon: Speedometer,
       title:
-        "Speed up work with recommendations on what—and how—to cite, as well as real-time feedback on your writing.",
+        "API-Ready: Integrate seamlessly to scan batches of documents, generate reports, and enforce integrity at scale.",
     },
   ];
 

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useDropzone } from "react-dropzone";
 import { useDocumentStore } from "@/store/document-store";
-import { useDocumentAnalysis } from "@/hooks/use-document-analysis";
+import { useDocumentAnalysis } from "@/hooks/copy-checker/useDocumentAnalysis";
 
 export const MAX_CHARACTERS = 30000;
 
