@@ -12,7 +12,7 @@
     "backend": "cd packages/backend && python -m uvicorn server:app --reload --port 8000",
     "frontend": "cd packages/frontend && npm run dev",
     "build": "npm run build:frontend",
-    "build:frontend": "cd packages/frontend && npm run build",
+    "build:frontend": "cd packages/frontend ; npm run build",
     "install:all": "npm install && cd packages/backend && npm install && cd ../frontend && npm install"
   },
   "devDependencies": {
