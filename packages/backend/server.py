@@ -8,10 +8,15 @@ from fastapi import FastAPI
 try:
     from .src.api.api import router as api_router
     from .src.middleware.cors_middleware import add_cors_middleware
+    from .src.config.logging_config import setup_logging
 except ImportError:
     # This allows the server to be run from the root of the project for local dev
     from src.api.api import router as api_router
     from src.middleware.cors_middleware import add_cors_middleware
+    from src.config.logging_config import setup_logging
+
+# Configure logging before initializing the app
+setup_logging()
 
 # Initialize the main FastAPI application
 app = FastAPI(
