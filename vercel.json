@@ -1,16 +1,22 @@
 {
-  "buildCommand": "cd packages/frontend ; npm run build",
-  "outputDirectory": "packages/frontend/.next",
-  "installCommand": "npm install",
-  "functions": {
-    "api/index.py": {
-      "runtime": "python3.9"
-    }
-  },
-  "rewrites": [
+  "builds": [
     {
-      "source": "/api/(.*)",
-      "destination": "/api/index.py"
+      "src": "packages/frontend/package.json",
+      "use": "@vercel/next"
+    },
+    {
+      "src": "api/index.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api/(.*)",
+      "dest": "/api/index.py"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/packages/frontend/$1"
     }
   ]
 } 
