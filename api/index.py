@@ -1,10 +1,16 @@
-import os
+"""
+Vercel-compatible API entry point for the Copy-Paste Checker backend.
+This file exposes the FastAPI application as required by Vercel's Python runtime.
+"""
 import sys
+import os
 
-# Ensure backend directory is in PYTHONPATH
-BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'packages', 'backend'))
-if BACKEND_DIR not in sys.path:
-    sys.path.append(BACKEND_DIR)
+# Add the packages/backend directory to the Python path
+backend_path = os.path.join(os.path.dirname(__file__), '..', 'packages', 'backend')
+sys.path.insert(0, backend_path)
 
-# Import the FastAPI app from the backend server module
-from server import app  # Vercel will look for this 'app' object 
+# Import the FastAPI application
+from server import app
+
+# Vercel expects the ASGI application to be available as 'app'
+# The FastAPI app is already configured in server.py 
