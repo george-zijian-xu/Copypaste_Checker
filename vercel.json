@@ -1,24 +1,13 @@
 {
-  "version": 2,
-  "name": "copypaste-checker",
-  "builds": [
-    {
-      "src": "packages/frontend/next.config.js",
-      "use": "@vercel/next"
-    },
-    {
-      "src": "api/fastapi.py",
-      "use": "@vercel/python"
+  "functions": {
+    "api/index.py": {
+      "runtime": "python3.9"
     }
-  ],
-  "routes": [
+  },
+  "rewrites": [
     {
-      "src": "/api/(.*)",
-      "dest": "api/fastapi.py"
-    },
-    {
-      "src": "/(.*)",
-      "dest": "packages/frontend/$1"
+      "source": "/api/(.*)",
+      "destination": "/api/index.py"
     }
   ]
 } 
