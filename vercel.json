@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "name": "copypaste-checker",
+  "builds": [
+    {
+      "src": "packages/frontend/next.config.js",
+      "use": "@vercel/next"
+    },
+    {
+      "src": "api/fastapi.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api/(.*)",
+      "dest": "api/fastapi.py"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "packages/frontend/$1"
+    }
+  ]
+} 
