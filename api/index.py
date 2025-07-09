@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from src.api.api import router as api_router
 from src.middleware.cors_middleware import add_cors_middleware
 
-# Create a new FastAPI app for Vercel without the /api/v1 prefix
+# Create a new FastAPI app for Vercel
 app = FastAPI(
     title="Copy-Paste Checker API",
     description="API for analyzing .docx files for copy-pasted content.",
@@ -21,8 +21,8 @@ app = FastAPI(
 # Add CORS middleware
 add_cors_middleware(app)
 
-# Include the API router without the /api/v1 prefix since Vercel handles that
-app.include_router(api_router, prefix="/v1")
+# Include the API router with /api/v1 prefix to match the frontend calls
+app.include_router(api_router, prefix="/api/v1")
 
 @app.get("/", tags=["Root"])
 async def read_root():
