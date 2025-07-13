@@ -8,7 +8,11 @@ import sys
 import tempfile
 import shutil
 import uuid
+import logging
 from collections import defaultdict
+
+# Get a logger for this module
+logger = logging.getLogger(__name__)
 
 # Lazy-import the analysis and unzip utilities while supporting direct script execution
 try:
@@ -78,34 +82,43 @@ def analyze_document_for_copying(docx_path: str):
         for suspected copied content, or None if the file cannot be processed.
     """
     if not os.path.isfile(docx_path):
-        print(f"Error: File not found at '{docx_path}'", file=sys.stderr)
+        logger.error(f"File not found at '{docx_path}'")
         return None
 
     # Create a temporary directory to extract the .docx contents
     temp_dir = tempfile.mkdtemp()
+    logger.info(f"Created temporary directory for analysis: {temp_dir}")
     try:
+        logger.info(f"Unzipping '{docx_path}' to '{temp_dir}'")
         if not unzip_docx(docx_path, temp_dir):
+            logger.error(f"Failed to unzip '{docx_path}'")
             return None # Unzip failed
 
         document_xml_path = os.path.join(temp_dir, "word", "document.xml")
         if not os.path.exists(document_xml_path):
-            print("Error: Could not find 'word/document.xml' in the unzipped file.", file=sys.stderr)
+            logger.error(f"Could not find 'word/document.xml' in '{temp_dir}'")
             return None
 
         # The analysis script now returns both the text and the highlights in one call.
+        logger.info(f"Running run-level analysis on '{document_xml_path}'")
         source_text, raw_highlights = analyze_document_runs(document_xml_path)
+        logger.info(f"Analysis completed. Found {len(raw_highlights)} raw highlights.")
 
         # Filter the raw highlights to find only the ones we suspect are copies.
         suspected_highlights = _filter_and_transform_highlights(raw_highlights)
+        logger.info(f"Filtered highlights. Found {len(suspected_highlights)} suspected copies.")
 
         return {
             "documentId": str(uuid.uuid4()),
             "sourceText": source_text,
             "highlights": suspected_highlights
         }
-
+    except Exception as e:
+        logger.error(f"An error occurred during the analysis of '{docx_path}': {e}", exc_info=True)
+        return None # Explicitly return None on failure
     finally:
         # Clean up the temporary directory
+        logger.info(f"Removing temporary directory: {temp_dir}")
         shutil.rmtree(temp_dir)
 
 if __name__ == "__main__":

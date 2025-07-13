@@ -58,8 +58,12 @@ export function useInput() {
   };
 
   const handleScanClick = () => {
-    if (textInput.trim() || file) {
-      handleSubmit(textInput.trim() || file!);
+    if (file) {
+      handleSubmit(file);
+    } else if (textInput.trim()) {
+      // For now, text input analysis is not implemented
+      // TODO: Implement text analysis or create a text-to-file conversion
+      console.warn("Text input analysis not yet implemented");
     }
   };
 
