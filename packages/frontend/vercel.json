@@ -8,8 +8,5 @@
     "pages/api/*.ts": {
       "runtime": "nodejs18.x"
     }
-  },
-  "env": {
-    "NEXT_PUBLIC_API_URL": "@api_url"
   }
 } 
