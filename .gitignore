@@ -43,3 +43,11 @@ Thumbs.db
 
 #downloadable files
 node_modules
+
+# Next.js
+.next/
+.next
+out/
+
+# Production
+build/
