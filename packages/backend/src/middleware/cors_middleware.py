@@ -2,6 +2,7 @@
 This module configures the Cross-Origin Resource Sharing (CORS) middleware.
 """
 from fastapi.middleware.cors import CORSMiddleware
+import os
 
 # Define the origins that are allowed to make requests to this API.
 # In a production environment, you would restrict this to your frontend's domain.
@@ -12,6 +13,10 @@ origins = [
     "http://localhost:3001",
     '*'
 ]
+
+# In development, allow all origins
+if os.getenv("ENVIRONMENT") == "development":
+    origins.append("*")
 
 def add_cors_middleware(app):
     """
