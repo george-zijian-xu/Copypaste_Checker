@@ -16,7 +16,7 @@ export function Footer() {
             About Us
           </a> */}
         </div>
-        <p>&copy; {new Date().getFullYear()} Copy Forensics. All rights reserved.</p>
+        <p>&copy; {new Date().getFullYear()} IsItYours. All rights reserved.</p>
       </div>
     </footer>
   );

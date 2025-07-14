@@ -6,7 +6,7 @@ export function Header() {
     <header className="w-full bg-white border-b border-gray-200 py-4 px-4 sm:px-6 lg:px-8 flex items-center justify-between">
       <Link href="#" className="flex items-center space-x-2 text-gray-900 font-bold text-xl" prefetch={false}>
         <BookText className="h-6 w-6 text-green-050" />
-        <span>Copy Forensics</span>
+        <span>IsItYours?</span>
       </Link>
       <nav>
         <ul className="flex space-x-4">

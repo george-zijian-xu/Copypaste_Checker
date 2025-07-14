@@ -8,7 +8,7 @@ import type React from "react";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "Copy Forensics",
+  title: "Copy Detector",
   description:
     "Uncover every single paste event with Word's own revision metadata—no black-box guesses, just clear evidence of what was pasted."
 };
