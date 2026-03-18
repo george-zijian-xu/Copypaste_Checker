@@ -4,6 +4,10 @@ import "./globals.css";
 import { Header } from "@/components/feature/layout/header";
 import { Footer } from "@/components/feature/layout/footer";
 import type React from "react";
+import { Analytics } from "@vercel/analytics/react";
+// @ts-ignore - types are provided at runtime
+import { SpeedInsights } from "@vercel/speed-insights/next";
+import { GoogleAnalytics } from "@/components/feature/analytics/google-analytics";
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -25,7 +29,10 @@ export default function RootLayout({
           <Header />
           <main className="flex-grow">{children}</main>
           <Footer />
+          <Analytics />
+          <SpeedInsights />
         </div>
+        <GoogleAnalytics />
       </body>
     </html>
   );

@@ -17,7 +17,7 @@ export default function PlagiarismCheckerPage() {
       <section className="text-center space-y-4">
         <h1 className="text-5xl font-bold tracking-tight text-gray-900">Copy Forensics</h1>
         <p className="text-lg text-gray-600 max-w-2xl mx-auto">
-        Uncover every single paste event with Word's own revision metadata—no black-box guesses, just clear evidence of what was pasted.
+          Uncover every single paste event with Word&apos;s own revision metadata—no black-box guesses, just clear evidence of what was pasted.
         </p>
       </section>
 
