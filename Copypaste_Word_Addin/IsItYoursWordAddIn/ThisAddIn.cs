@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using Office = Microsoft.Office.Core;
 using Word   = Microsoft.Office.Interop.Word;
@@ -195,17 +196,35 @@ namespace IsItYoursWordAddIn
         {
             try
             {
-                // Compare COM object identity rather than FullName strings.
-                // FullName is empty for unsaved documents, making string comparison unreliable.
                 var active = Application?.ActiveDocument;
                 if (active == null || doc == null) return -1;
-                if (!System.Runtime.InteropServices.Marshal.AreComObjectsEqual(active, doc))
-                    return -1;
+                if (!ComObjectsEqual(active, doc)) return -1;
 
                 var sel = Application?.Selection;
                 return sel == null ? -1 : Math.Max(0, sel.Start);
             }
             catch { return -1; }
+        }
+
+        // Returns true if two RCW wrappers point to the same underlying COM object.
+        // Marshal.AreComObjectsEqual was removed from .NET 4; compare IUnknown pointers instead.
+        private static bool ComObjectsEqual(object a, object b)
+        {
+            if (ReferenceEquals(a, b)) return true;
+            if (a == null || b == null) return false;
+            IntPtr p1 = IntPtr.Zero, p2 = IntPtr.Zero;
+            try
+            {
+                p1 = Marshal.GetIUnknownForObject(a);
+                p2 = Marshal.GetIUnknownForObject(b);
+                return p1 == p2;
+            }
+            catch { return false; }
+            finally
+            {
+                if (p1 != IntPtr.Zero) Marshal.Release(p1);
+                if (p2 != IntPtr.Zero) Marshal.Release(p2);
+            }
         }
 
         // Returns true on success, false on any failure (read-only doc, COM error, etc.).
@@ -244,7 +263,6 @@ namespace IsItYoursWordAddIn
             catch { return false; }
         }
 
-        // Matches an incoming document to an existing engine.
         // Two-phase lookup: COM identity first (handles new docs without an XML part),
         // then DocGuid from the XML part (handles re-opens after Word restart).
         // Creating a new engine on every poll for a brand-new document would silently
@@ -257,8 +275,7 @@ namespace IsItYoursWordAddIn
             {
                 try
                 {
-                    if (kv.Value != null
-                        && System.Runtime.InteropServices.Marshal.AreComObjectsEqual(kv.Value, doc)
+                    if (kv.Value != null && ComObjectsEqual(kv.Value, doc)
                         && _engines.TryGetValue(kv.Key, out var existingByCom))
                         return existingByCom;
                 }
