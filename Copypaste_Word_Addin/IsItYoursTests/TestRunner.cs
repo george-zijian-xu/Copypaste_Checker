@@ -15,6 +15,7 @@ namespace IsItYoursTests
             RunSuite("BTree", Tests.BTreeTests.All());
             RunSuite("Engine", Tests.EngineTests.All());
             RunSuite("Encryption", Tests.EncryptionTests.All());
+            RunSuite("PasteTraceRefactor", Tests.PasteTraceTests.All());
 
             Console.WriteLine($"\n=== {_pass} passed, {_fail} failed ===");
             Console.WriteLine("\nNote: Integration tests for provenance chain require Word to be installed.");

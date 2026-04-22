@@ -12,7 +12,7 @@ namespace IsItYoursTests.Tests
         static PasteTraceEngine MakeEngine(string initialText = "")
         {
             _docText = initialText;
-            return new PasteTraceEngine(() => _docText, () => _docText.Length);
+            return new PasteTraceEngine(() => _docText, () => _docText.Length, () => _docText.Length);
         }
 
         public static IEnumerable<(string, Action)> All() => new (string, Action)[]

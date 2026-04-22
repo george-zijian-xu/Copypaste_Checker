@@ -43,6 +43,7 @@
     <Compile Include="Tests\BTreeTests.cs" />
     <Compile Include="Tests\EngineTests.cs" />
     <Compile Include="Tests\EncryptionTests.cs" />
+    <Compile Include="Tests\PasteTraceTests.cs" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>

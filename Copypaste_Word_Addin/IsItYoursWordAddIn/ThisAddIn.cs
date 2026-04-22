@@ -1,156 +1,226 @@
-﻿using System;
-using System.Text;
+using System;
+using System.Collections.Generic;
 using System.Windows.Forms;
 using Office = Microsoft.Office.Core;
-using Word = Microsoft.Office.Interop.Word;
-
+using Word   = Microsoft.Office.Interop.Word;
 
 namespace IsItYoursWordAddIn
 {
     public partial class ThisAddIn
     {
-        private Timer _timer;
-        // Per-document engines keyed by pasteTrace <doc g="...">
-        private readonly System.Collections.Generic.Dictionary<string, PasteTraceEngine> _engines
-            = new System.Collections.Generic.Dictionary<string, PasteTraceEngine>(StringComparer.Ordinal);
-        // Defer clipboard candidate and bind it to whichever doc emits the next paste tick
-        private ClipboardCandidate _pendingClipboard;
-        private IClipboardProbe _clip;
+        // _captureTimer (50 ms): polls for text changes, sets State.Dirty.
+        // _flushTimer (2 s): builds encrypted XML and writes CustomXML only when dirty.
+        // Decoupling the two timers keeps XML/encrypt/write overhead (~12–30 ms) off
+        // the hot capture path.
+        private Timer _captureTimer;
+        private Timer _flushTimer;
 
+        private readonly Dictionary<string, PasteTraceEngine> _engines
+            = new Dictionary<string, PasteTraceEngine>(StringComparer.Ordinal);
+
+        // Tracks the Word.Document object for each engine so ForceFlush can target
+        // the correct document without relying on Application.ActiveDocument.
+        private readonly Dictionary<string, Word.Document> _engineDocs
+            = new Dictionary<string, Word.Document>(StringComparer.Ordinal);
+
+        private ClipboardCandidate _pendingClipboard;
+        private IClipboardProbe    _clip;
 
         private void ThisAddIn_Startup(object sender, EventArgs e)
         {
             _clip = new ClipboardProbe();
-            // Just stash the latest clipboard candidate; we’ll bind it to the active doc at tick time
             _clip.CandidateAvailable += c => { _pendingClipboard = c; };
             _clip.Start();
 
-            this.Application.DocumentOpen += Application_DocumentOpen;
-            this.Application.DocumentBeforeClose -= Application_DocumentBeforeClose; // ensure no duplicates
+            this.Application.DocumentOpen        += Application_DocumentOpen;
+            this.Application.DocumentBeforeClose -= Application_DocumentBeforeClose;
             this.Application.DocumentBeforeClose += Application_DocumentBeforeClose;
-            this.Application.WindowActivate += Application_WindowActivate;
+            this.Application.WindowActivate      += Application_WindowActivate;
+            this.Application.DocumentBeforeSave  += Application_DocumentBeforeSave;
 
-
-            _timer = new Timer { Interval = 1000 };
-            _timer.Tick += (s, _) =>
+            _captureTimer = new Timer { Interval = 50 };
+            _captureTimer.Tick += (s, _) =>
             {
                 try
                 {
                     if (Application?.ActiveDocument == null) return;
 
-                    var doc = Application.ActiveDocument;
-                    var engine = EnsureEngineFor(doc);                 // NEW: resolve per-<doc g="..."> engine
-                    // If we have a pending clipboard event, give it to the active doc *before* we poll
+                    var doc    = Application.ActiveDocument;
+                    var engine = EnsureEngineFor(doc);
+
                     if (_pendingClipboard != null)
                     {
                         try { Provenance.SetCandidate(engine.State, _pendingClipboard); }
-                        catch { /* ignore */ }
+                        catch { }
                         _pendingClipboard = null;
                     }
 
-                    bool changed = engine.PollOnce();
-                    if (!changed) return;
-
-                    // Attach provenance if last op is a paste-suspect insert
-                    var ticks = engine.State.Ticks;
-                    if (ticks.Count > 0)
-                    {
-                        var last = ticks[ticks.Count - 1];
-                        if (last.Op == "ins" && last.Paste == 1)
-                            Provenance.AttachForPasteTick(this.Application, engine.State, last);
-                    }
-
-                    // Write or update the custom XML part for THIS doc
-                    string xml = PasteTraceXml.Build(engine.State);
-                    WriteCustomXml(doc, "urn:paste-monitor", xml);
-
-
+                    engine.PollOnce();
                 }
-                catch { /* swallow to avoid killing timer; consider logging */ }
+                catch { }
             };
-            _timer.Start();
+
+            // Flush ALL dirty engines, not just the active document. A user who edits
+            // doc A, switches to doc B for a long time, then crashes would lose unflushed
+            // ticks from doc A if only the active document were flushed periodically.
+            _flushTimer = new Timer { Interval = 2000 };
+            _flushTimer.Tick += (s, _) =>
+            {
+                foreach (var kv in _engines)
+                {
+                    var engine = kv.Value;
+                    if (!engine.State.Dirty) continue;
+                    if (!_engineDocs.TryGetValue(kv.Key, out var doc) || doc == null) continue;
+                    try { ForceFlush(doc, engine); }
+                    catch { }
+                }
+            };
+
+            _captureTimer.Start();
+            _flushTimer.Start();
         }
+
         private void Application_DocumentOpen(Word.Document Doc)
         {
-            try { 
+            try
+            {
                 var engine = EnsureEngineFor(Doc);
                 engine.OnDocumentOpened(Doc, DateTime.UtcNow);
-                // ——————— Write initial CustomXML immediately ————————
-                // so that part.Exists == true before any typing/pasting
-                var xml = PasteTraceXml.Build(engine.State);
-                WriteCustomXml(Doc,"urn:paste-monitor", xml);
+                ForceFlush(Doc, engine);
             }
-            catch { /* log if you have logging */ }
+            catch { }
         }
 
         private void Application_WindowActivate(Word.Document Doc, Word.Window Wn)
         {
-            try {
+            try
+            {
                 var engine = EnsureEngineFor(Doc);
                 engine.OnDocumentActivated(Doc, DateTime.UtcNow);
-                // ensure part is there even if no edits yet
-                var xml = PasteTraceXml.Build(engine.State);
-                WriteCustomXml(Doc,"urn:paste-monitor", xml);
+
+                // Only flush if there is new data or the CustomXML part does not exist yet.
+                // Flushing on every activate caused a ~12–30 ms WriteCustomXml stall
+                // each time the user switched Word windows with no new ticks.
+                if (engine.State.Dirty || !HasCustomXmlPart(Doc))
+                    ForceFlush(Doc, engine);
             }
-            catch { /* ignore */ }
+            catch { }
         }
 
         private void Application_DocumentBeforeClose(Word.Document Doc, ref bool Cancel)
         {
-            try { EnsureEngineFor(Doc).OnDocumentClosing(Doc, DateTime.UtcNow); }
-            catch { /* ignore */ }
+            try
+            {
+                var engine = EnsureEngineFor(Doc);
+                ForceFlush(Doc, engine);
+                engine.OnDocumentClosing(Doc, DateTime.UtcNow);
+
+                var key = engine.State.DocGuid;
+                if (key != null)
+                {
+                    _engines.Remove(key);
+                    _engineDocs.Remove(key);
+                }
+            }
+            catch { }
         }
 
-
+        private void Application_DocumentBeforeSave(
+            Word.Document Doc, ref bool SaveAsUI, ref bool Cancel)
+        {
+            try { ForceFlush(Doc, EnsureEngineFor(Doc)); }
+            catch { }
+        }
 
         private void ThisAddIn_Shutdown(object sender, EventArgs e)
         {
-            _timer?.Stop();
+            _captureTimer?.Stop();
+            _flushTimer?.Stop();
+
+            foreach (var kv in _engines)
+            {
+                if (!kv.Value.State.Dirty) continue;
+                if (_engineDocs.TryGetValue(kv.Key, out var doc))
+                    try { ForceFlush(doc, kv.Value); } catch { }
+            }
+
             _clip?.Stop();
             _clip?.Dispose();
             _clip = null;
-            _timer?.Dispose();
-            _timer = null;
+
+            _captureTimer?.Dispose();
+            _flushTimer?.Dispose();
+            _captureTimer = null;
+            _flushTimer   = null;
         }
 
-        private string GetActiveDocumentText()
+        // Attaches pending provenance for all unbound paste ticks, builds encrypted XML,
+        // writes the CustomXML part. Clears State.Dirty only on a successful write.
+        private void ForceFlush(Word.Document doc, PasteTraceEngine engine)
         {
-            try
+            var ticks = engine.State.Ticks;
+            // Scan backwards so the most recent paste tick gets the clipboard candidate first.
+            for (int i = ticks.Count - 1; i >= 0; i--)
             {
-                var doc = Application?.ActiveDocument;
-                if (doc == null) return string.Empty;
-                // Word returns CRs; keep them (we’re linearizing text)
-                return doc.Content?.Text ?? string.Empty;
+                var t = ticks[i];
+                if (t.Op != "ins" || t.Paste != 1) continue;
+#if !TEST_HARNESS
+                if (engine.State._pasteEvidence.ContainsKey(t.TickId)) continue;
+                Provenance.AttachForPasteTick(this.Application, engine.State, t);
+                if (engine.State._clipCandidate == null) break;
+#endif
             }
+
+            string xml     = PasteTraceXml.Build(engine.State);
+            bool   written = WriteCustomXml(doc, "urn:paste-monitor", xml);
+            // Only clear Dirty on success. On failure the next flush cycle retries;
+            // the HMAC cache is already advanced so the retry reuses stored t.Hmac values.
+            if (written)
+                engine.State.Dirty = false;
+        }
+
+        private string GetDocumentText(Word.Document doc)
+        {
+            try { return doc?.Content?.Text ?? string.Empty; }
             catch { return string.Empty; }
         }
 
-        private int GetCaretPos()
+        private int GetDocumentCharCount(Word.Document doc)
+        {
+            try { return doc?.Characters?.Count ?? -1; }
+            catch { return -1; }
+        }
+
+        private int GetDocumentCaretPos(Word.Document doc)
         {
             try
             {
+                // Compare COM object identity rather than FullName strings.
+                // FullName is empty for unsaved documents, making string comparison unreliable.
+                var active = Application?.ActiveDocument;
+                if (active == null || doc == null) return -1;
+                if (!System.Runtime.InteropServices.Marshal.AreComObjectsEqual(active, doc))
+                    return -1;
+
                 var sel = Application?.Selection;
-                if (sel == null) return -1;
-                // Convert Word selection to 0-based char offset in document text.
-                // Word characters are 1-based; Selection.Start is 0-based in content.
-                // We keep it simple: use Start as an approx caret.
-                return Math.Max(0, sel.Start);
+                return sel == null ? -1 : Math.Max(0, sel.Start);
             }
             catch { return -1; }
         }
 
-        private void WriteCustomXml(Word.Document targetDoc, string ns, string xml)
+        // Returns true on success, false on any failure (read-only doc, COM error, etc.).
+        // Caller treats false as "still dirty; retry next flush."
+        private bool WriteCustomXml(Word.Document targetDoc, string ns, string xml)
         {
-            if (targetDoc == null) return;
+            if (targetDoc == null) return false;
 
-            // do not touch background read-only sources
             bool isReadOnly = false;
-            try { isReadOnly = targetDoc.ReadOnly; } catch { }
-            if (isReadOnly) return;
+            try { isReadOnly = targetDoc.ReadOnly; } catch { return false; }
+            if (isReadOnly) return false;
 
             Office.CustomXMLParts parts = null;
-            try { parts = targetDoc.CustomXMLParts; } catch { }
-            if (parts == null) return;
+            try { parts = targetDoc.CustomXMLParts; } catch { return false; }
+            if (parts == null) return false;
 
             try
             {
@@ -159,21 +229,69 @@ namespace IsItYoursWordAddIn
                     for (int i = existing.Count; i >= 1; i--) existing[i].Delete();
 
                 parts.Add(xml);
+                return true;
             }
-            catch { /* swallow; avoid timer death */ }
+            catch { return false; }
         }
 
-        // Return the pasteTrace <doc g="..."> if present; else null.
+        private bool HasCustomXmlPart(Word.Document doc)
+        {
+            try
+            {
+                var parts = doc?.CustomXMLParts?.SelectByNamespace("urn:paste-monitor");
+                return parts != null && parts.Count >= 1;
+            }
+            catch { return false; }
+        }
+
+        // Matches an incoming document to an existing engine.
+        // Two-phase lookup: COM identity first (handles new docs without an XML part),
+        // then DocGuid from the XML part (handles re-opens after Word restart).
+        // Creating a new engine on every poll for a brand-new document would silently
+        // lose all data — each new engine's baseline = current text, so no diffs fire.
+        private PasteTraceEngine EnsureEngineFor(Word.Document doc)
+        {
+            if (doc == null) return null;
+
+            foreach (var kv in _engineDocs)
+            {
+                try
+                {
+                    if (kv.Value != null
+                        && System.Runtime.InteropServices.Marshal.AreComObjectsEqual(kv.Value, doc)
+                        && _engines.TryGetValue(kv.Key, out var existingByCom))
+                        return existingByCom;
+                }
+                catch { }
+            }
+
+            var g = TryReadDocGuid(doc);
+            if (g != null && _engines.TryGetValue(g, out var existingByGuid))
+                return existingByGuid;
+
+            Word.Document capturedDoc = doc;
+            var engine = new PasteTraceEngine(
+                () => GetDocumentText(capturedDoc),
+                () => GetDocumentCaretPos(capturedDoc),
+                () => GetDocumentCharCount(capturedDoc));
+
+            try { engine.OnDocumentOpened(doc, DateTime.UtcNow); } catch { }
+
+            var key = engine.State.DocGuid ?? g ?? Guid.NewGuid().ToString();
+            _engines[key]    = engine;
+            _engineDocs[key] = doc;
+            return engine;
+        }
+
         private static string TryReadDocGuid(Word.Document doc)
         {
             try
             {
                 var parts = doc?.CustomXMLParts?.SelectByNamespace("urn:paste-monitor");
                 if (parts == null || parts.Count < 1) return null;
-                var xml = parts[1].XML;
-                // super-light parse: look for g="..."; we already trust our own writer’s shape
+                var xml    = parts[1].XML;
                 var marker = " g=\"";
-                var i = xml.IndexOf(marker, StringComparison.Ordinal);
+                var i      = xml.IndexOf(marker, StringComparison.Ordinal);
                 if (i < 0) return null;
                 i += marker.Length;
                 var j = xml.IndexOf('"', i);
@@ -183,29 +301,10 @@ namespace IsItYoursWordAddIn
             catch { return null; }
         }
 
-        // Create or fetch the per-document engine keyed by <doc g="...">
-        private PasteTraceEngine EnsureEngineFor(Word.Document doc)
-        {
-            // If the doc already has pasteTrace XML, use that g; else we’ll mint one via the engine ctor
-            var g = TryReadDocGuid(doc);
-
-            if (g != null && _engines.TryGetValue(g, out var existing))
-                return existing;
-
-            var engine = new PasteTraceEngine(() => GetActiveDocumentText(), () => GetCaretPos());
-
-            // Let the engine hydrate + start a session; this also sets State.DocGuid (either loaded or newly minted)
-            try { engine.OnDocumentOpened(doc, DateTime.UtcNow); } catch { }
-
-            var key = engine.State.DocGuid ?? g ?? Guid.NewGuid().ToString();
-            _engines[key] = engine;
-            return engine;
-        }
-
         #region VSTO generated
         private void InternalStartup()
         {
-            this.Startup += new EventHandler(ThisAddIn_Startup);
+            this.Startup  += new EventHandler(ThisAddIn_Startup);
             this.Shutdown += new EventHandler(ThisAddIn_Shutdown);
         }
         #endregion
