@@ -1,15 +1,62 @@
-# Output directories
-temp/
+# ── Sensitive / credentials ──────────────────────────────────────────────────
+*.pem
+*.pfx
+*.key
+*.p12
+*.cer
+*.b64
+dev_private.*
+dev_public.*
+*_TemporaryKey.*
 
-# Python
+# ── Build output ──────────────────────────────────────────────────────────────
+bin/
+obj/
+out/
+build/
+dist/
+*.exe
+*.dll
+*.pdb
+*.cache
+
+# ── Visual Studio ─────────────────────────────────────────────────────────────
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.pidb
+*.sdf
+*.VC.db
+*.ncrunchsolution
+*.ncrunchproject
+
+# ── Drafts / correspondence / personal notes ──────────────────────────────────
+*correspondance*
+*correspondence*
+*.draft.*
+drafts/
+
+# ── Deprecated / archive ─────────────────────────────────────────────────────
+Deprecated/
+*.zip
+*.tar.gz
+*.7z
+*.rar
+
+# ── Test documents / sample files ────────────────────────────────────────────
+Test_doc/
+*.docx
+*.doc
+
+# ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
-build/
 develop-eggs/
-dist/
 downloads/
 eggs/
 .eggs/
@@ -21,33 +68,40 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-
-# Virtual environments
 venv/
 env/
 ENV/
 
-# IDE
+# ── Node / Next.js ────────────────────────────────────────────────────────────
+node_modules/
+.next/
+.env
+.env.local
+.env.*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── IDE ───────────────────────────────────────────────────────────────────────
 .vscode/
 .idea/
 *.swp
 *.swo
 
-# OS
-.DS_Store
-Thumbs.db
+# ── Claude Code (local dev tool) ─────────────────────────────────────────────
+.claude/
 
-# Temporary files
+# ── Temp / misc ───────────────────────────────────────────────────────────────
+temp/
+tmp/
 *.tmp
-*.temp 
-
-#downloadable files
-node_modules
-
-# Next.js
-.next/
-.next
-out/
-
-# Production
-build/
+*.temp
+*.log
+*.bak
+*.orig

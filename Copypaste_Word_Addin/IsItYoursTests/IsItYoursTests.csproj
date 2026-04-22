@@ -1,0 +1,48 @@
+<Project ToolsVersion="17.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <ProjectGuid>{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}</ProjectGuid>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>IsItYoursTests</RootNamespace>
+    <AssemblyName>IsItYoursTests</AssemblyName>
+    <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
+    <DefineConstants>TEST_HARNESS</DefineConstants>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+    <OutputPath>bin\Debug\</OutputPath>
+    <DefineConstants>$(DefineConstants);DEBUG;TRACE</DefineConstants>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.Security" />
+    <Reference Include="System.Xml" />
+    <Reference Include="Microsoft.CSharp" />
+  </ItemGroup>
+  <!-- Share engine source files directly (no Word dependency in these files) -->
+  <ItemGroup>
+    <Compile Include="..\IsItYoursWordAddIn\Engine\BTreeSeq.cs">
+      <Link>Engine\BTreeSeq.cs</Link>
+    </Compile>
+    <Compile Include="..\IsItYoursWordAddIn\Engine\PasteTraceState.cs">
+      <Link>Engine\PasteTraceState.cs</Link>
+    </Compile>
+    <Compile Include="..\IsItYoursWordAddIn\Engine\PasteTraceEngine.cs">
+      <Link>Engine\PasteTraceEngine.cs</Link>
+    </Compile>
+    <Compile Include="..\IsItYoursWordAddIn\Engine\TraceEncryption.cs">
+      <Link>Engine\TraceEncryption.cs</Link>
+    </Compile>
+    <Compile Include="TestRunner.cs" />
+    <Compile Include="WordStubs.cs" />
+    <Compile Include="Tests\BTreeTests.cs" />
+    <Compile Include="Tests\EngineTests.cs" />
+    <Compile Include="Tests\EncryptionTests.cs" />
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+</Project>
