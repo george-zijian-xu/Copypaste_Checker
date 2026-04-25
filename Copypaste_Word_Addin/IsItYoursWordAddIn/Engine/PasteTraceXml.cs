@@ -137,7 +137,7 @@ namespace IsItYoursWordAddIn
                     {
                         bool hasAny = !string.IsNullOrEmpty(ev.SrcDocGuid) || !string.IsNullOrEmpty(ev.SrcFile) ||
                                       !string.IsNullOrEmpty(ev.SrcAuthor)  || !string.IsNullOrEmpty(ev.SrcTitle) ||
-                                      ev.SrcTotalEditMin.HasValue || !string.IsNullOrEmpty(ev.WasPaste) ||
+                                      ev.SrcTotalEditMin.HasValue || !string.IsNullOrEmpty(ev.MappingFailure) ||
                                       (ev.Origins != null && ev.Origins.Count > 0) || !string.IsNullOrEmpty(ev.OriginalPidXml);
                         if (hasAny)
                         {
@@ -148,13 +148,20 @@ namespace IsItYoursWordAddIn
                             if (!string.IsNullOrEmpty(ev.SrcAuthor))  sb.Append($@"          <author>{E(ev.SrcAuthor)}</author>").AppendLine();
                             if (!string.IsNullOrEmpty(ev.SrcTitle))   sb.Append($@"          <title>{E(ev.SrcTitle)}</title>").AppendLine();
                             if (ev.SrcTotalEditMin.HasValue)           sb.Append($@"          <totalEditMin>{ev.SrcTotalEditMin.Value}</totalEditMin>").AppendLine();
-                            if (!string.IsNullOrEmpty(ev.WasPaste))   sb.Append($@"          <wasPaste>{E(ev.WasPaste)}</wasPaste>").AppendLine();
+                            if (!string.IsNullOrEmpty(ev.MappingFailure)) sb.Append($@"          <mappingFailure>{E(ev.MappingFailure)}</mappingFailure>").AppendLine();
                             if (ev.Origins != null && ev.Origins.Count > 0)
                             {
                                 sb.Append(@"          <origins>").AppendLine();
                                 foreach (var o in ev.Origins)
                                     sb.Append($@"            <origin t=""{E(o.t)}"" off=""{o.off}"" n=""{o.n}""/>").AppendLine();
                                 sb.Append(@"          </origins>").AppendLine();
+                            }
+                            if (ev.OriginCandidates != null && ev.OriginCandidates.Count > 0)
+                            {
+                                sb.Append(@"          <originCandidates>").AppendLine();
+                                foreach (var o in ev.OriginCandidates)
+                                    sb.Append($@"            <origin t=""{E(o.t)}"" off=""{o.off}"" n=""{o.n}""/>").AppendLine();
+                                sb.Append(@"          </originCandidates>").AppendLine();
                             }
                             sb.Append(@"        </doc>").AppendLine();
                         }
@@ -171,7 +178,7 @@ namespace IsItYoursWordAddIn
                             if (!string.IsNullOrEmpty(hop.SrcAuthor)) sb.Append($@" author=""{E(hop.SrcAuthor)}""");
                             if (!string.IsNullOrEmpty(hop.SrcTitle))  sb.Append($@" title=""{E(hop.SrcTitle)}""");
                             if (hop.SrcTotalEditMin.HasValue)          sb.Append($@" editMin=""{hop.SrcTotalEditMin.Value}""");
-                            sb.Append($@" status=""{E(hop.Status ?? "unknown")}""");
+                            sb.Append($@" status=""{E(hop.ChainStatus ?? "unknown")}""");
                             if (hop.Origins != null && hop.Origins.Count > 0)
                             {
                                 sb.Append(@">").AppendLine();
@@ -185,6 +192,14 @@ namespace IsItYoursWordAddIn
                         }
                         sb.Append(@"        </chain>").AppendLine();
                     }
+
+                    // Nested recursive provenance tree — authoritative view of this paste.
+                    // Hydration doesn't parse this back yet (the browser analyzer reads it
+                    // directly from the decrypted payload), so there's no round-trip
+                    // obligation to preserve shape on save-close-reopen. The emitter
+                    // tolerates empty branches and missing fields gracefully.
+                    if (ev.ProvenanceTree != null)
+                        WriteProvenanceSource(sb, ev.ProvenanceTree, "        ");
 
                     sb.Append(@"      </evidence>").AppendLine();
                     sb.Append(@"    </pid>").AppendLine();
@@ -384,8 +399,8 @@ namespace IsItYoursWordAddIn
                             if (title != null)   ev.SrcTitle  = title.InnerText ?? "";
                             var tem     = docp.SelectSingleNode("pm:totalEditMin", nsmgr) ?? docp.SelectSingleNode("totalEditMin");
                             if (tem != null)     { int v; if (int.TryParse(tem.InnerText ?? "", out v)) ev.SrcTotalEditMin = v; }
-                            var wp      = docp.SelectSingleNode("pm:wasPaste",     nsmgr) ?? docp.SelectSingleNode("wasPaste");
-                            if (wp != null)      ev.WasPaste = wp.InnerText ?? "";
+                            var mf      = docp.SelectSingleNode("pm:mappingFailure", nsmgr) ?? docp.SelectSingleNode("mappingFailure");
+                            if (mf != null)      ev.MappingFailure = mf.InnerText ?? "";
                             var origins = docp.SelectSingleNode("pm:origins",      nsmgr) ?? docp.SelectSingleNode("origins");
                             if (origins != null)
                             {
@@ -399,6 +414,19 @@ namespace IsItYoursWordAddIn
                                     ev.Origins.Add((o.GetAttribute("t") ?? "", off, n));
                                 }
                             }
+                            var candidates = docp.SelectSingleNode("pm:originCandidates", nsmgr) ?? docp.SelectSingleNode("originCandidates");
+                            if (candidates != null)
+                            {
+                                ev.OriginCandidates = new System.Collections.Generic.List<(string t, int off, int n)>();
+                                var cNodes = candidates.SelectNodes("pm:origin", nsmgr) ?? candidates.SelectNodes("origin");
+                                foreach (XmlElement o in cNodes)
+                                {
+                                    int off = 0, n = 0;
+                                    int.TryParse(o.GetAttribute("off"), out off);
+                                    int.TryParse(o.GetAttribute("n"),   out n);
+                                    ev.OriginCandidates.Add((o.GetAttribute("t") ?? "", off, n));
+                                }
+                            }
                         }
                         var chainNode = evNode.SelectSingleNode("pm:chain", nsmgr) ?? evNode.SelectSingleNode("chain");
                         if (chainNode != null)
@@ -409,11 +437,11 @@ namespace IsItYoursWordAddIn
                             {
                                 var hop = new ProvenanceHop
                                 {
-                                    DocGuid   = hopEl.GetAttribute("g")      ?? "",
-                                    SrcFile   = hopEl.GetAttribute("file")   ?? "",
-                                    SrcAuthor = hopEl.GetAttribute("author") ?? "",
-                                    SrcTitle  = hopEl.GetAttribute("title")  ?? "",
-                                    Status    = hopEl.GetAttribute("status") ?? "unknown"
+                                    DocGuid     = hopEl.GetAttribute("g")      ?? "",
+                                    SrcFile     = hopEl.GetAttribute("file")   ?? "",
+                                    SrcAuthor   = hopEl.GetAttribute("author") ?? "",
+                                    SrcTitle    = hopEl.GetAttribute("title")  ?? "",
+                                    ChainStatus = hopEl.GetAttribute("status") ?? "unknown"
                                 };
                                 int em;
                                 if (int.TryParse(hopEl.GetAttribute("editMin"), out em)) hop.SrcTotalEditMin = em;
@@ -455,6 +483,56 @@ namespace IsItYoursWordAddIn
                 if (int.TryParse(s, out v)) return v;
                 try   { return Convert.ToInt32(s, 16); } catch { return 0; }
             }
+        }
+
+        // Recursive emitter for ProvenanceSource trees. Callers pass the leading
+        // whitespace the <source> element should be indented at; child elements add
+        // two more spaces per level and <segment> children recurse with indent + 4.
+        // Leaves (browser / doc-local / unknown) produce a <source> with a small
+        // set of child elements. Word nodes with Segments recurse into <segments>.
+        private static void WriteProvenanceSource(StringBuilder sb, ProvenanceSource src, string indent)
+        {
+            if (src == null) return;
+
+            string childIndent = indent + "  ";
+            string segIndent   = childIndent +"fuckkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk" +"  ";
+            string innerIndent = segIndent + "  ";
+
+            sb.Append(indent).Append(@"<source kind=""").Append(E(src.Kind ?? "unknown")).Append('"');
+            if (!string.IsNullOrEmpty(src.DocGuid))      sb.Append(@" docGuid=""").Append(E(src.DocGuid)).Append('"');
+            if (!string.IsNullOrEmpty(src.SrcFile))      sb.Append(@" file=""").Append(E(src.SrcFile)).Append('"');
+            if (src.Len > 0)                              sb.Append(@" len=""").Append(src.Len).Append('"');
+            if (!string.IsNullOrEmpty(src.TickId))       sb.Append(@" tick=""").Append(E(src.TickId)).Append(@""" off=""").Append(src.OffsetInTick).Append('"');
+            sb.Append(@" live=""").Append(src.Live ? "true" : "false").Append('"');
+            if (!string.IsNullOrEmpty(src.MappingFailure))
+                sb.Append(@" mappingFailure=""").Append(E(src.MappingFailure)).Append('"');
+            sb.Append('>').AppendLine();
+
+            if (!string.IsNullOrEmpty(src.Url))
+                sb.Append(childIndent).Append("<url>").Append(E(src.Url)).Append("</url>").AppendLine();
+            if (!string.IsNullOrEmpty(src.Process))
+                sb.Append(childIndent).Append("<process>").Append(E(src.Process)).Append("</process>").AppendLine();
+            if (!string.IsNullOrEmpty(src.Text))
+                sb.Append(childIndent).Append("<text>").Append(E(src.Text)).Append("</text>").AppendLine();
+
+            if (src.Segments != null && src.Segments.Count > 0)
+            {
+                sb.Append(childIndent).Append("<segments>").AppendLine();
+                foreach (var seg in src.Segments)
+                {
+                    sb.Append(segIndent).Append(@"<segment start=""").Append(seg.Start)
+                      .Append(@""" len=""").Append(seg.Len).Append('"');
+                    if (!string.IsNullOrEmpty(seg.Text))
+                        sb.Append(@" text=""").Append(E(seg.Text)).Append('"');
+                    sb.Append('>').AppendLine();
+                    if (seg.Source != null)
+                        WriteProvenanceSource(sb, seg.Source, innerIndent);
+                    sb.Append(segIndent).Append("</segment>").AppendLine();
+                }
+                sb.Append(childIndent).Append("</segments>").AppendLine();
+            }
+
+            sb.Append(indent).Append("</source>").AppendLine();
         }
 
         private static string E(string s) => SecurityElement.Escape(s) ?? string.Empty;

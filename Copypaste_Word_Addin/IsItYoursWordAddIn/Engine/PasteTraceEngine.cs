@@ -174,6 +174,25 @@ namespace IsItYoursWordAddIn
             string tickId = MakeTickId();
             int paste = text.Length >= State.PasteThreshold ? 1 : 0;
 
+            // Short-paste heuristic. The length threshold catches browser pastes (usually
+            // long enough) but misses cross-Word pastes of short snippets like "3doc33"
+            // or "2doc23doc332" that a user legitimately copies between docs. If a recent
+            // clipboard candidate's text contains (or is contained by) this insert's text
+            // after line-ending normalisation, treat it as a paste regardless of length.
+            // Typing rarely reproduces the last-copied text exactly, so false positives
+            // are negligible in practice.
+            if (paste == 0 && !string.IsNullOrEmpty(text) && text.Length >= 3 && State._clipCandidate != null)
+            {
+                string nt = text.Replace("\r\n", "\r").Replace("\n", "\r").TrimEnd();
+                string nc = (State._clipCandidate.Text ?? "").Replace("\r\n", "\r").Replace("\n", "\r").TrimEnd();
+                if (nt.Length >= 3 && nc.Length >= 3 &&
+                    (nc.IndexOf(nt, StringComparison.Ordinal) >= 0 ||
+                     nt.IndexOf(nc, StringComparison.Ordinal) >= 0))
+                {
+                    paste = 1;
+                }
+            }
+
             var ins = new TickRow
             {
                 TickId           = tickId,
@@ -259,11 +278,31 @@ namespace IsItYoursWordAddIn
             _pollsSinceFullSweep = 0;
 
             State.PrevText = _getDocText() ?? string.Empty;
+
+            // Publish this state globally so cross-document provenance resolution
+            // (e.g. when another doc pastes from this one) can find the live
+            // in-memory trace instead of reading a stale CustomXMLParts snapshot.
+            // Registered under both the current docId (ephemeral for unsaved docs
+            // — "Document3" etc.) and the state's DocGuid (stable across saves).
+            DocStateRegistry.Register(docId, State);
         }
 
         public void OnDocumentActivated(Word.Document doc, DateTime nowUtc)
         {
-            if (_activeDocId != SafeDocId(doc))
+            // If the doc's FullName changed since we last saw it (e.g. Save-As on a
+            // previously unsaved doc turns "Document3" into "C:\...\doc3.docx"), keep
+            // the registry keyed on the current name without losing session state.
+            var nowId = SafeDocId(doc);
+            if (!string.IsNullOrEmpty(_activeDocId) &&
+                _sessionStartedForActiveDoc &&
+                !string.Equals(_activeDocId, nowId, StringComparison.OrdinalIgnoreCase))
+            {
+                DocStateRegistry.Rekey(_activeDocId, nowId, State);
+                _activeDocId = nowId;
+                return;
+            }
+
+            if (_activeDocId != nowId)
                 OnDocumentOpened(doc, nowUtc);
         }
 
@@ -273,6 +312,10 @@ namespace IsItYoursWordAddIn
             // Durability lives in ThisAddIn.Application_DocumentBeforeClose → ForceFlush,
             // which runs before this method. Do not set Dirty here.
             _sessionStartedForActiveDoc = false;
+
+            // Remove from the global registry so lingering provenance lookups don't
+            // resolve to a doc that's no longer open.
+            DocStateRegistry.Unregister(_activeDocId, State?.DocGuid);
         }
 
         private static string SafeDocId(Word.Document doc)

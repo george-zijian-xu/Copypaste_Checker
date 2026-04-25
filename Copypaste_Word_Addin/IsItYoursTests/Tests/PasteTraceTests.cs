@@ -41,7 +41,8 @@ namespace IsItYoursTests.Tests
             bool changed = e.PollOnce();
             TestRunner.Assert(!changed,                 "baseline returns !changed");
             TestRunner.Assert(e.State.Ticks.Count == 0, "baseline emits 0 ticks");
-            TestRunner.Assert(!e.State.Dirty,           "baseline is not dirty");
+            // StartSession() marks Dirty=true so the new session row is persisted even with no edits.
+            TestRunner.Assert(e.State.Dirty,            "baseline is dirty after open (session row pending flush)");
         }
 
         static void Append_OneChar()
@@ -197,7 +198,8 @@ namespace IsItYoursTests.Tests
             var e = fx.Build();
             e.OnDocumentOpened(null, DateTime.UtcNow);
             e.PollOnce();
-            TestRunner.Assert(!e.State.Dirty, "baseline leaves state clean");
+            // StartSession() marks Dirty=true; that's expected — session row needs flushing.
+            TestRunner.Assert(e.State.Dirty, "dirty after open (session row pending)");
 
             fx.Text = "a"; fx.Caret = 1;
             e.PollOnce();

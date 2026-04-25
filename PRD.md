@@ -1,8 +1,8 @@
 # IsItYours — Product Requirements Document
 
 **Internal name:** Copy-paste checker
-**Version:** 0.4
-**Date:** 2026-04-17
+**Version:** 0.5
+**Date:** 2026-04-23
 
 ---
 
@@ -24,18 +24,22 @@ Students submit written work they didn't write. Existing plagiarism tools (Turni
 
 The reference implementation. All other platforms are measured against this.
 
-**Status: Working. Encryption, adjacency fusion, session wrap-around, and test suite all implemented and passing (27/27 tests).**
+**Status: Working. Encryption, adjacency fusion, 50ms two-lane polling, session wrap-around, and test suite all implemented and passing (38/38 tests).**
 
 ---
 
 #### 3.1.1 Polling & Diffing
 
-- 1Hz timer (`System.Windows.Forms.Timer`) fires on the UI thread
-- On each tick: read `doc.Content.Text`, diff against `PrevText` using LCP (longest common prefix) + LCS (longest common suffix) to find the changed region
-- Emits one `ins` tick or one `del` tick per poll cycle (never both — the larger change wins)
-- Tick ID format: `sssddddd` — 3 hex session ID + 5 hex second counter within session (e.g. `00100001` = session 1, second 1)
+- Two-lane timer architecture (replaced 1Hz single timer):
+  - `_captureTimer` fires every **50 ms** on the UI thread — reads `doc.Content.Text`, diffs against `PrevText` using LCP + LCS, appends ticks to in-memory list
+  - `_flushTimer` fires every **2 s** — builds, encrypts, and writes the XML payload to the custom XML part; skips if `PasteTraceState.Dirty == false`
+- Emits one `ins` tick or one `del` tick per capture cycle (never both — the larger change wins)
+- Tick ID format: `{SessionId:X3}{PollCounter:X5}` — 3 hex session ID + 5 hex poll counter (e.g. `001000A3` = session 1, poll 163). Counter increments every 50 ms capture tick.
+- `TickRow.CreatedElapsedMs`: real milliseconds since session start via `Stopwatch` (monotonic); stored as `ms` attribute on each tick in XML (`tickfmt="2"`)
 - Session IDs: 0–FFF (0–4095), wrap at 4096 using `(maxId + 1) % 4096`
 - Del ticks are intentional — they provide a full audit trail and are a signal against fabricated "clean" traces (real writing has corrections)
+- `PasteTraceState.Dirty`: set on any new tick; flush timer skips build/encrypt/write when false (avoids unnecessary writes)
+- Incremental HMAC: `LastComputedChainHmac` + `LastHmacTickIndex` — each flush only recomputes HMAC over new ticks (O(new) not O(all))
 
 #### 3.1.2 Paste Detection
 
@@ -48,7 +52,7 @@ Defends against AutoHotkey-style slow injection (~19 chars/sec, each tick just u
 
 Algorithm (runs after every insert tick):
 1. Walk backwards through recent `ins` ticks
-2. Accumulate a run if: each tick is `ins`, not already `paste=1`, ≥ 3 chars (`FusionMinCharsEach`), contiguous in document position, and gap ≤ 1 second between consecutive ticks (`FusionMaxGapSeconds`)
+2. Accumulate a run if: each tick is `ins`, not already `paste=1`, ≥ 3 chars (`FusionMinCharsEach`), contiguous in document position, and gap ≤ 1000 ms between consecutive ticks (`FusionMaxGapMs = 1000`)
 3. If combined length of the run ≥ `PasteThreshold`, retroactively set all ticks in the run to `paste=1`
 
 #### 3.1.4 Session Attribution

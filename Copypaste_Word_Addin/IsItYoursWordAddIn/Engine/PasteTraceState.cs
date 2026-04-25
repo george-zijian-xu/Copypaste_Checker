@@ -62,12 +62,35 @@ namespace IsItYoursWordAddIn
         {
             SessionStartUtc       = utcNow;
             SessionPollCounter    = 0;
-            Dirty                 = false;
             LastComputedChainHmac = null;  // force full chain recompute from new root
             LastHmacTickIndex     = 0;
 
-            if (Sessions.Count == 0 || Sessions[Sessions.Count - 1].Id != SessionId)
-                Sessions.Add(new SessionRow { Id = SessionId, StartUtc = utcNow });
+            // Always allocate a SessionId strictly greater than any previously used one
+            // and always append a row. The previous behaviour ("skip if last row already
+            // has this SessionId") caused two concrete regressions:
+            //
+            //   1. Session count stuck at 1. On a fresh doc SessionId defaults to 0 and is
+            //      only bumped on re-open (HydrateInner). Re-entering StartSession within
+            //      the same process (e.g. multi-doc activation cycles) left SessionId=0,
+            //      so the guard short-circuited and no row was appended.
+            //
+            //   2. Duplicate tick IDs within one doc. TickId = {SessionId:X3}{PollCounter:X5}.
+            //      Re-entering StartSession reset PollCounter to 0 without changing
+            //      SessionId, so the next insert emitted "00000001" a second time, and
+            //      later ticks overwrote earlier _pasteEvidence entries keyed on that ID.
+            //
+            // Computing nextId from max(existing) + 1 is also the behaviour HydrateInner
+            // expects after a re-open, so the two paths agree.
+            int nextId = 0;
+            for (int i = 0; i < Sessions.Count; i++)
+                if (Sessions[i].Id >= nextId) nextId = Sessions[i].Id + 1;
+            SessionId = nextId % 4096;
+
+            Sessions.Add(new SessionRow { Id = SessionId, StartUtc = utcNow });
+
+            // Mark dirty so the new session row is persisted even if no edits follow.
+            // Without this, a save-close-reopen with no edits drops the session row.
+            Dirty = true;
         }
 
         public void ClearTransientCountersOnly()
