@@ -1,10 +1,30 @@
 using System;
 using System.Collections.Generic;
+using Microsoft.Win32;
 
 namespace IsItYoursWordAddIn
 {
     public sealed class PasteTraceState
     {
+        // ── Debug mode ───────────────────────────────────────────────────────
+        // Set HKCU\Software\IsItYours\DebugLogging = 1 to enable diagnostic logs.
+        // Defaults to false in production; error logs always fire regardless.
+        public static readonly bool DebugLogging = ReadDebugFlag();
+        private static bool ReadDebugFlag()
+        {
+            try
+            {
+                using (var key = Registry.CurrentUser.OpenSubKey(@"Software\IsItYours"))
+                    return key != null && (int)(key.GetValue("DebugLogging", 0) ?? 0) == 1;
+            }
+            catch { return false; }
+        }
+
+        // Log a diagnostic entry — only written when DebugLogging is enabled.
+        public void LogDebug(string stage, string message, string tickId = null, string data = null)
+        {
+            if (DebugLogging) Log(stage, message, tickId, data);
+        }
         public sealed class SessionRow { public int Id; public DateTime StartUtc; }
         public sealed class DebugRow
         {

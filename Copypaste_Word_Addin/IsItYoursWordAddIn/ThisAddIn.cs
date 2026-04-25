@@ -107,7 +107,7 @@ namespace IsItYoursWordAddIn
                     if (changed)
                         AttachRecentPasteEvidence(engine);
                 }
-                catch (Exception ex) { System.Diagnostics.Debug.WriteLine("[PasteTrace] capture.timer.error: " + ex.GetType().Name + ": " + ex.Message); }
+                catch { /* swallow — must not kill the capture timer */ }
             };
 
             // ── [P1-1] Flush timer (2 s) ───────────────────────────────────────
