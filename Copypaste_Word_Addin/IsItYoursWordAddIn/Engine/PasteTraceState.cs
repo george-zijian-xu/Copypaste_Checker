@@ -6,7 +6,48 @@ namespace IsItYoursWordAddIn
     public sealed class PasteTraceState
     {
         public sealed class SessionRow { public int Id; public DateTime StartUtc; }
+        public sealed class DebugRow
+        {
+            public DateTime Utc;
+            public int SessionId;
+            public string Stage;
+            public string TickId;
+            public string Message;
+            public string Data;
+        }
+
         public List<SessionRow> Sessions { get; } = new List<SessionRow>();
+        public List<DebugRow> DebugLog { get; } = new List<DebugRow>();
+        public const int MaxDebugRows = 1200;
+
+        public void Log(string stage, string message, string tickId = null, string data = null)
+        {
+            try
+            {
+                string stg = stage ?? "";
+                string msg = message ?? "";
+                string dat = data ?? "";
+
+                // Do not store raw timer heartbeat spam. It hides the useful provenance logs.
+                // Keep actual text-change / tick.insert / tick.delete / flush / provenance events.
+                if ((stg == "capture" && msg == "timer") ||
+                    (stg == "capture" && dat.IndexOf("result=tick", StringComparison.OrdinalIgnoreCase) >= 0))
+                    return;
+
+                DebugLog.Add(new DebugRow
+                {
+                    Utc = DateTime.UtcNow,
+                    SessionId = SessionId,
+                    Stage = stg,
+                    TickId = tickId ?? "",
+                    Message = msg,
+                    Data = dat
+                });
+                while (DebugLog.Count > MaxDebugRows) DebugLog.RemoveAt(0);
+                Dirty = true;
+            }
+            catch { }
+        }
 
         public string   DocGuid         { get; set; }
         public string   AppVersion      { get; set; }
@@ -91,6 +132,7 @@ namespace IsItYoursWordAddIn
             // Mark dirty so the new session row is persisted even if no edits follow.
             // Without this, a save-close-reopen with no edits drops the session row.
             Dirty = true;
+            Log("session.start", "session row appended", null, "session=" + SessionId.ToString("X3") + ";sessions=" + Sessions.Count);
         }
 
         public void ClearTransientCountersOnly()

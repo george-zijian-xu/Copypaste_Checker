@@ -217,6 +217,7 @@
     <Compile Include="Engine\PasteTraceState.cs" />
     <Compile Include="Engine\PasteTraceXml.cs" />
     <Compile Include="Engine\Provenance.cs" />
+    <Compile Include="Engine\TraceDebugLog.cs" />
     <Compile Include="Properties\AssemblyInfo.cs">
       <SubType>Code</SubType>
     </Compile>

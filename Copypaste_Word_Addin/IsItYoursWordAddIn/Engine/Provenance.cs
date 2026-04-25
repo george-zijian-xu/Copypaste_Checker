@@ -95,6 +95,141 @@ namespace IsItYoursWordAddIn
 
     public static class Provenance
     {
+        private sealed class WordCopySnapshot
+        {
+            public PasteTraceState SourceState;
+            public string SourceDocGuid;
+            public string SourceFile;
+            public string SourceAuthor;
+            public string SourceTitle;
+            public int? SourceTotalEditMin;
+            public List<(string t, int off, int n)> Origins;
+            public string MappingFailure;
+            public string Text;
+        }
+
+        private static readonly object _snapshotLock = new object();
+        private static readonly Dictionary<string, WordCopySnapshot> _wordCopySnapshots
+            = new Dictionary<string, WordCopySnapshot>(StringComparer.Ordinal);
+
+        private static string SnapshotKey(ClipboardCandidate c)
+        {
+            // Stable content-based key so the snapshot survives clipboard probe re-creation
+            return (c.Process ?? "").ToLowerInvariant() + "\n" + (c.SourceUrl ?? "") + "\n" + (c.Text ?? "");
+        }
+
+        public static void TryEnrichWordCandidateFromActiveDocument(Word.Application app, PasteTraceState activeState, ClipboardCandidate cand)
+        {
+            if (cand == null || activeState == null) return;
+            string proc = (cand.Process ?? "").ToLowerInvariant();
+            string url = cand.SourceUrl ?? "";
+            bool looksWord = proc.Contains("winword") ||
+                             (url.StartsWith("file:", StringComparison.OrdinalIgnoreCase) &&
+                              url.EndsWith(".docx", StringComparison.OrdinalIgnoreCase));
+            if (!looksWord) return;
+
+            string needle = (cand.Text ?? "").Replace("\r\n", "\r").Replace("\n", "\r").Replace("\v", "\r").TrimEnd();
+            if (string.IsNullOrEmpty(needle)) return;
+
+            string prev = (activeState.PrevText ?? "").Replace("\r\n", "\r").Replace("\n", "\r").Replace("\v", "\r");
+            if (prev.IndexOf(needle, StringComparison.Ordinal) < 0)
+            {
+                activeState.Log("prov.copy_snapshot.skip", "active document did not contain clipboard text before paste", null, "proc=" + (cand.Process ?? "") + ";url=" + url + ";needle=" + Preview(needle));
+                return;
+            }
+
+            List<(string t, int off, int n)> origins;
+            string failure;
+            bool mapped = TryMapTextToOrigins(activeState, needle, out origins, out failure);
+            if (!mapped)
+                activeState.Log("prov.copy_snapshot.map_fail", "TryMapTextToOrigins failed at copy-time", null, "failure=" + (failure ?? "") + ";needle=" + Preview(needle) + ";ticks=" + activeState.Ticks.Count);
+
+            Word.Document activeDoc = null;
+            try { activeDoc = app?.ActiveDocument; } catch { activeDoc = null; }
+
+            var snap = new WordCopySnapshot
+            {
+                SourceState = activeState,
+                SourceDocGuid = activeState.DocGuid,
+                SourceFile = TryFileUrl(activeDoc),
+                SourceAuthor = SafeGetBuiltinProperty(activeDoc, "Author"),
+                SourceTitle = SafeGetBuiltinProperty(activeDoc, "Title"),
+                SourceTotalEditMin = ComputeTotalEditMinutesApprox(activeState),
+                Origins = mapped ? origins : null,
+                MappingFailure = mapped ? null : failure,
+                Text = needle
+            };
+
+            lock (_snapshotLock) _wordCopySnapshots[SnapshotKey(cand)] = snap;
+            activeState.Log("prov.copy_snapshot.capture", "captured copy-time Word provenance snapshot", null,
+                "srcGuid=" + (snap.SourceDocGuid ?? "") + ";srcFile=" + (snap.SourceFile ?? "") + ";origins=" + (snap.Origins == null ? 0 : snap.Origins.Count) + ";failure=" + (snap.MappingFailure ?? "") + ";text=" + Preview(needle));
+        }
+
+        private static bool TryApplyWordCopySnapshot(Word.Application app, PasteTraceState targetState, ClipboardCandidate cand, ref PasteEvidence ev)
+        {
+            WordCopySnapshot snap = null;
+            lock (_snapshotLock) _wordCopySnapshots.TryGetValue(SnapshotKey(cand), out snap);
+            if (snap == null)
+            {
+                targetState.Log("prov.copy_snapshot.miss", "no copy-time snapshot found for candidate", null,
+                    "proc=" + (cand.Process ?? "") + ";url=" + (cand.SourceUrl ?? "") + ";snapshots=" + _wordCopySnapshots.Count);
+                return false;
+            }
+
+            ev.Origin = "word";
+            ev.SrcDocGuid = snap.SourceDocGuid;
+            ev.SrcFile = snap.SourceFile;
+            ev.Url = snap.SourceFile;
+            ev.SrcAuthor = snap.SourceAuthor;
+            ev.SrcTitle = snap.SourceTitle;
+            ev.SrcTotalEditMin = snap.SourceTotalEditMin;
+            ev.Origins = snap.Origins;
+            ev.MappingFailure = snap.MappingFailure;
+
+            if (snap.SourceState != null && snap.Origins != null && snap.Origins.Count > 0)
+            {
+                try
+                {
+                    var seed = new HashSet<string>(StringComparer.Ordinal);
+                    if (!string.IsNullOrEmpty(targetState.DocGuid)) seed.Add(targetState.DocGuid);
+                    ev.ProvenanceTree = BuildProvenanceTree(app, targetState, snap.SourceState, snap.Origins, ev.SrcFile, seed);
+                    targetState.Log("prov.copy_snapshot.tree", "recursive tree built from copy-time snapshot", null,
+                        "srcGuid=" + (ev.SrcDocGuid ?? "") + ";segments=" + (ev.ProvenanceTree == null || ev.ProvenanceTree.Segments == null ? 0 : ev.ProvenanceTree.Segments.Count));
+                }
+                catch (Exception ex)
+                {
+                    targetState.Log("prov.copy_snapshot.tree_error", "failed to build tree from copy-time snapshot", null, ex.GetType().Name + ": " + ex.Message);
+                }
+
+                try
+                {
+                    var visited = new HashSet<string>(StringComparer.Ordinal);
+                    if (!string.IsNullOrEmpty(targetState.DocGuid)) visited.Add(targetState.DocGuid);
+                    if (!string.IsNullOrEmpty(snap.SourceState.DocGuid)) visited.Add(snap.SourceState.DocGuid);
+                    ev.Chain = ResolveChain(app, snap.SourceState, snap.Origins, visited, depth: 0);
+                }
+                catch (Exception ex) { targetState.Log("prov.copy_snapshot.chain_error", "failed to build chain from snapshot", null, ex.GetType().Name + ": " + ex.Message); }
+            }
+            else
+            {
+                ev.ProvenanceTree = new ProvenanceSource
+                {
+                    Kind = "word",
+                    DocGuid = ev.SrcDocGuid,
+                    SrcFile = ev.SrcFile,
+                    Text = ev.FullText,
+                    Len = (ev.FullText ?? "").Length,
+                    Live = snap.SourceState != null,
+                    MappingFailure = ev.MappingFailure ?? "copy-snapshot-no-origins"
+                };
+            }
+
+            targetState.Log("prov.copy_snapshot.apply", "applied copy-time Word provenance snapshot", null,
+                "srcGuid=" + (ev.SrcDocGuid ?? "") + ";srcFile=" + (ev.SrcFile ?? "") + ";origins=" + (ev.Origins == null ? 0 : ev.Origins.Count) + ";failure=" + (ev.MappingFailure ?? ""));
+            return true;
+        }
+
+
         // The clipboard candidate is written to every live doc's state. The user may
         // copy while one doc is focused and then activate a different doc to paste; if
         // the candidate only lived on the source state the destination wouldn't see it
@@ -106,6 +241,7 @@ namespace IsItYoursWordAddIn
             foreach (var st in DocStateRegistry.AllLiveStates())
                 st._clipCandidate = c;
             if (s != null) s._clipCandidate = c;     // covers states not yet registered
+            if (s != null) s.Log("clipboard.set", "clipboard candidate broadcast", null, "proc=" + (c.Process ?? "") + ";url=" + (c.SourceUrl ?? "") + ";chromium=" + (c.ChromiumUrl ?? "") + ";text=" + Preview(c.Text));
         }
 
         public static ClipboardCandidate ConsumeCandidate(PasteTraceState s)
@@ -124,7 +260,11 @@ namespace IsItYoursWordAddIn
         public static void AttachForPasteTick(Word.Application app, PasteTraceState s, TickRow tick)
         {
             var cand = s._clipCandidate;
-            if (cand == null) return;
+            if (cand == null)
+            {
+                s.Log("prov.attach.no_candidate", "no clipboard candidate available for paste tick", tick.TickId, "text=" + Preview(tick.Text));
+                return;
+            }
 
             string Norm(string x) => (x ?? "")
                 .Replace("\r\n", "\r")
@@ -150,11 +290,29 @@ namespace IsItYoursWordAddIn
 
             var origin = looksBrowser ? "browser" : looksWord ? "word" : "unknown";
 
-            // Browser and Word pastes always proceed — browser needs no text-match gate
-            // (clipboard text may differ from tick text due to Word reformatting), and
-            // Word pastes are verified by TryWordMapping directly.
-            // Only truly unknown sources are gated by subsetOk.
-            bool mayProceed = looksBrowser || looksWord || subsetOk;
+            s.Log("prov.attach", "candidate attached to paste tick", tick.TickId, "originGuess=" + origin + ";proc=" + cand.Process + ";url=" + url + ";subsetOk=" + subsetOk + ";tick=" + Preview(tick.Text) + ";clip=" + Preview(cand.Text));
+
+            bool candidateTextMismatch = nonEmpty && !subsetOk;
+
+            if (looksBrowser && candidateTextMismatch)
+            {
+                ClearAllCandidates();
+                s._pasteEvidence[tick.TickId] = new PasteEvidence
+                {
+                    Origin = "unknown",
+                    ClipboardUtc = cand.Utc,
+                    ClipboardProcess = cand.Process,
+                    Url = url,
+                    ChromiumUrl = cand.ChromiumUrl ?? "",
+                    FirefoxTitle = cand.FirefoxTitle ?? "",
+                    FullText = tick.Text,
+                    MappingFailure = "clipboard-text-mismatch"
+                };
+                s.Log("prov.attach.reject", "browser candidate text mismatched paste tick; stale clipboard candidate discarded", tick.TickId, "url=" + url + ";tick=" + Preview(tick.Text) + ";clip=" + Preview(cand.Text));
+                return;
+            }
+
+            bool mayProceed = looksWord || looksBrowser || subsetOk;
 
             if (!mayProceed)
             {
@@ -186,7 +344,15 @@ namespace IsItYoursWordAddIn
             };
 
             if (origin == "word")
-                TryWordMapping(app, s, cand, ref ev);
+            {
+                if (!TryApplyWordCopySnapshot(app, s, cand, ref ev))
+                {
+                    s.Log("prov.attach.word_fallback", "copy-time snapshot not available; falling back to TryWordMapping", tick.TickId, "proc=" + (cand.Process ?? "") + ";url=" + url);
+                    TryWordMapping(app, s, cand, ref ev);
+                }
+            }
+
+            s.Log("prov.attach.final", "paste evidence finalized", tick.TickId, "origin=" + (ev.Origin ?? "") + ";srcGuid=" + (ev.SrcDocGuid ?? "") + ";srcFile=" + (ev.SrcFile ?? "") + ";mappingFailure=" + (ev.MappingFailure ?? "") + ";origins=" + (ev.Origins == null ? 0 : ev.Origins.Count) + ";tree=" + (ev.ProvenanceTree == null ? "no" : "yes"));
 
             s._pasteEvidence[tick.TickId] = ev;
             ClearAllCandidates();
@@ -196,6 +362,8 @@ namespace IsItYoursWordAddIn
         private static void TryWordMapping(Word.Application app, PasteTraceState s, ClipboardCandidate cand, ref PasteEvidence ev)
         {
             var url = cand.SourceUrl ?? "";
+            s.Log("prov.word.mapping.start", "TryWordMapping entered", null, "url=" + url + ";proc=" + (cand.Process ?? ""));
+            if (TryResolveFromOpenLiveSource(app, s, cand, ref ev)) return;
             if (!(url.StartsWith("file:", StringComparison.OrdinalIgnoreCase) &&
                   url.EndsWith(".docx", StringComparison.OrdinalIgnoreCase)))
             {
@@ -221,7 +389,7 @@ namespace IsItYoursWordAddIn
                         {
                             var seed = new HashSet<string>(StringComparer.Ordinal);
                             if (!string.IsNullOrEmpty(s.DocGuid)) seed.Add(s.DocGuid);
-                            ev.ProvenanceTree = BuildProvenanceTree(app, openState, openOrigins, ev.SrcFile, seed);
+                            ev.ProvenanceTree = BuildProvenanceTree(app, s, openState, openOrigins, ev.SrcFile, seed);
                         }
                         catch { }
 
@@ -299,25 +467,35 @@ namespace IsItYoursWordAddIn
                     openedByUs = true;
                 }
 
-                // 4) Look for our custom XML part in the source
-                var parts = srcDoc?.CustomXMLParts?.SelectByNamespace("urn:paste-monitor");
-                if (parts == null || parts.Count < 1)
+                // 4) Prefer the live in-memory state for an open source doc.
+                // CustomXMLParts may be stale until the 2-second flush/save/close path runs.
+                PasteTraceState srcState = TryGetLiveStateForDocument(srcDoc);
+                bool sourceWasLive = (srcState != null);
+
+                if (srcState == null)
                 {
-                    ev.Origin = "word-plain";
-                    ev.MappingFailure = "no-trace";
-                    return;
+                    var parts = srcDoc?.CustomXMLParts?.SelectByNamespace("urn:paste-monitor");
+                    if (parts == null || parts.Count < 1)
+                    {
+                        ev.Origin = "word-plain";
+                        ev.MappingFailure = "no-trace";
+                        return;
+                    }
+
+                    srcState = new PasteTraceState { DocGuid = "", AppVersion = PasteTraceEngine.AppVersion, PasteThreshold = PasteTraceEngine.DefaultPasteThreshold };
+                    PasteTraceXml.TryHydrate(srcDoc, srcState);
                 }
 
-                // 5) Hydrate a temp state from the source doc's XML
-                var srcState = new PasteTraceState { DocGuid = "", AppVersion = PasteTraceEngine.AppVersion, PasteThreshold = PasteTraceEngine.DefaultPasteThreshold };
-                PasteTraceXml.TryHydrate(srcDoc, srcState);
+                s.Log("prov.word.file.source_state", "resolved file-url source state", null,
+                    "srcFile=" + url + ";live=" + sourceWasLive + ";srcGuid=" + (srcState.DocGuid ?? "") + ";ticks=" + srcState.Ticks.Count + ";evidence=" + srcState._pasteEvidence.Count);
 
                 // 6) Flatten visible text from the source state
                 var flat = BuildFlatVisibleText(srcState, out var pieceIndex);
 
                 // 7) Locate the pasted text in the source
-                string Norm(string x) => (x ?? "").Replace("\r\n", "\r").Replace("\n", "\r").TrimEnd();
+                string Norm(string x) => (x ?? "").Replace("\r\n", "\r").Replace("\n", "\r").Replace("\v", "\r").TrimEnd();
                 var needle = Norm(ev.FullText).Length >= Norm(cand.Text).Length ? Norm(ev.FullText) : Norm(cand.Text);
+                string mappingNeedle = needle;
 
                 if (string.IsNullOrEmpty(needle))
                 {
@@ -328,15 +506,8 @@ namespace IsItYoursWordAddIn
                     int hit = flat.IndexOf(needle, StringComparison.Ordinal);
                     if (hit < 0)
                     {
-                        // Exact match failed. Collect all paste ticks as candidates so
-                        // ResolveChain can still walk the chain; exact Origins stays null.
                         ev.MappingFailure = "no-substring-hit";
-                        var candidates = new List<(string t, int off, int n)>();
-                        foreach (var t in srcState.Ticks)
-                            if (t.Op == "ins" && t.Paste == 1)
-                                candidates.Add((t.TickId, 0, t.Len));
-                        if (candidates.Count > 0)
-                            ev.OriginCandidates = candidates;
+                        s.Log("prov.word.file.no_hit", "file SourceURL did not contain pasted text; not using broad paste candidates", null, "srcFile=" + url + ";needle=" + Preview(needle) + ";flatLen=" + flat.Length);
                     }
                     else
                     {
@@ -366,6 +537,26 @@ namespace IsItYoursWordAddIn
                 ev.SrcAuthor = SafeGetBuiltinProperty(srcDoc, "Author");
                 ev.SrcTitle = SafeGetBuiltinProperty(srcDoc, "Title");
                 ev.SrcTotalEditMin = ComputeTotalEditMinutesApprox(srcState);
+
+                // Second-pass tolerant mapping. The first pass above is deliberately simple;
+                // this pass handles CR/LF/vertical-tab differences and repairs cases where
+                // the source was found but exact origins were not serialized.
+                if ((ev.Origins == null || ev.Origins.Count == 0) && !string.IsNullOrEmpty(mappingNeedle))
+                {
+                    string mapFailure2;
+                    List<(string t, int off, int n)> recovered2;
+                    if (TryMapTextToOrigins(srcState, mappingNeedle, out recovered2, out mapFailure2))
+                    {
+                        ev.Origins = recovered2;
+                        ev.MappingFailure = null;
+                        s.Log("prov.word.file.recovered_origins", "recovered direct file-source origins", null, "srcGuid=" + (ev.SrcDocGuid ?? "") + ";srcFile=" + (ev.SrcFile ?? "") + ";origins=" + recovered2.Count + ";text=" + Preview(mappingNeedle));
+                    }
+                    else
+                    {
+                        if (string.IsNullOrEmpty(ev.MappingFailure)) ev.MappingFailure = mapFailure2;
+                        s.Log("prov.word.file.recover_failed", "failed to recover direct file-source origins", null, "srcGuid=" + (ev.SrcDocGuid ?? "") + ";srcFile=" + (ev.SrcFile ?? "") + ";failure=" + mapFailure2 + ";text=" + Preview(mappingNeedle));
+                    }
+                }
 
                 // Build nested pid XML from exact origins (not candidates)
                 try
@@ -414,9 +605,13 @@ namespace IsItYoursWordAddIn
                         {
                             var seed = new HashSet<string>(StringComparer.Ordinal);
                             if (!string.IsNullOrEmpty(s.DocGuid)) seed.Add(s.DocGuid);
-                            ev.ProvenanceTree = BuildProvenanceTree(app, srcState, ev.Origins, ev.SrcFile, seed);
+                            ev.ProvenanceTree = BuildProvenanceTree(app, s, srcState, ev.Origins, ev.SrcFile, seed);
+                            s.Log("prov.tree.built", "recursive provenance tree built from file/live source", null, "srcGuid=" + (ev.SrcDocGuid ?? "") + ";segments=" + (ev.ProvenanceTree == null || ev.ProvenanceTree.Segments == null ? 0 : ev.ProvenanceTree.Segments.Count));
                         }
-                        catch { }
+                        catch (Exception ex)
+                        {
+                            s.Log("prov.tree.file_error", "failed to build tree from file source", null, ex.GetType().Name + ": " + ex.Message);
+                        }
                     }
 
                     try
@@ -426,15 +621,19 @@ namespace IsItYoursWordAddIn
                         if (!string.IsNullOrEmpty(srcState.DocGuid)) visited.Add(srcState.DocGuid);
                         ev.Chain = ResolveChain(app, srcState, chainOrigins, visited, depth: 0);
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        s.Log("prov.chain.file_error", "failed to build chain from file source", null, ex.GetType().Name + ": " + ex.Message);
+                    }
                 }
             }
-            catch
+            catch (Exception ex)
             {
                 ev.Origin = "word-plain";
                 ev.SrcDocGuid = null;
                 ev.SrcFile = null;
                 ev.MappingFailure = "source-doc-unavailable";
+                s.Log("prov.word.file.outer_error", "TryWordMapping outer exception", null, ex.GetType().Name + ": " + ex.Message);
             }
             finally
             {
@@ -443,6 +642,85 @@ namespace IsItYoursWordAddIn
                 if (openedByUs && priorActive != null)
                     try { priorActive.Activate(); } catch { }
             }
+        }
+
+
+        private static bool TryResolveFromOpenLiveSource(Word.Application app, PasteTraceState s, ClipboardCandidate cand, ref PasteEvidence ev)
+        {
+            Word.Document openSrc;
+            PasteTraceState openState;
+            List<(string t, int off, int n)> openOrigins;
+
+            string needle = !string.IsNullOrEmpty(ev.FullText) ? ev.FullText : cand.Text;
+            s.Log("prov.word.live_search.start", "searching open/live Word docs before trusting CF_HTML SourceURL", null,
+                "needle=" + Preview(needle) + ";candidateUrl=" + (cand.SourceUrl ?? "") + ";liveStates=" + DocStateRegistry.AllLiveStates().Count);
+
+            if (!TryFindOpenWordSourceByText(app, needle, out openSrc, out openState, out openOrigins))
+            {
+                s.Log("prov.word.live_search.miss", "no open/live Word source matched pasted text", null,
+                    "needle=" + Preview(needle) + ";candidateUrl=" + (cand.SourceUrl ?? ""));
+                return false;
+            }
+
+            ev.Origin = "word";
+            ev.SrcDocGuid = (openState != null && !string.IsNullOrEmpty(openState.DocGuid)) ? openState.DocGuid : null;
+            ev.SrcFile = TryFileUrl(openSrc);
+            ev.Url = ev.SrcFile; // CF_HTML SourceURL can be inherited/stale across Word-to-Word copies.
+            ev.SrcAuthor = SafeGetBuiltinProperty(openSrc, "Author");
+            ev.SrcTitle = SafeGetBuiltinProperty(openSrc, "Title");
+            ev.SrcTotalEditMin = openState != null ? ComputeTotalEditMinutesApprox(openState) : null;
+            ev.Origins = openOrigins;
+            ev.MappingFailure = null;
+
+            s.Log("prov.word.live_search.hit", "open/live Word source matched", null,
+                "srcGuid=" + (ev.SrcDocGuid ?? "") + ";srcFile=" + (ev.SrcFile ?? "") + ";origins=" + (openOrigins == null ? 0 : openOrigins.Count));
+
+            if (openOrigins != null && openOrigins.Count > 0 && openState != null)
+            {
+                try
+                {
+                    var seed = new HashSet<string>(StringComparer.Ordinal);
+                    if (!string.IsNullOrEmpty(s.DocGuid)) seed.Add(s.DocGuid);
+                    ev.ProvenanceTree = BuildProvenanceTree(app, s, openState, openOrigins, ev.SrcFile, seed);
+                    s.Log("prov.tree.built", "recursive provenance tree built from live source", null,
+                        "srcGuid=" + (ev.SrcDocGuid ?? "") + ";segments=" + (ev.ProvenanceTree?.Segments == null ? 0 : ev.ProvenanceTree.Segments.Count));
+                }
+                catch (Exception ex)
+                {
+                    s.Log("prov.tree.error", "failed to build recursive provenance tree from live source", null, ex.GetType().Name + ": " + ex.Message);
+                }
+
+                try
+                {
+                    var visited = new HashSet<string>(StringComparer.Ordinal);
+                    if (!string.IsNullOrEmpty(s.DocGuid)) visited.Add(s.DocGuid);
+                    if (!string.IsNullOrEmpty(openState.DocGuid)) visited.Add(openState.DocGuid);
+                    ev.Chain = ResolveChain(app, openState, openOrigins, visited, depth: 0);
+                    s.Log("prov.chain.built", "flat chain built from live source", null, "hops=" + (ev.Chain == null ? 0 : ev.Chain.Count));
+                }
+                catch (Exception ex)
+                {
+                    s.Log("prov.chain.error", "failed to build flat chain from live source", null, ex.GetType().Name + ": " + ex.Message);
+                }
+            }
+            else
+            {
+                ev.MappingFailure = (openState == null) ? "source-doc-no-trace" : "no-state-mapping";
+                ev.ProvenanceTree = new ProvenanceSource
+                {
+                    Kind = "word",
+                    DocGuid = ev.SrcDocGuid,
+                    SrcFile = ev.SrcFile,
+                    Text = ev.FullText,
+                    Len = (ev.FullText ?? "").Length,
+                    Live = (openState != null),
+                    MappingFailure = ev.MappingFailure
+                };
+                s.Log("prov.word.live_search.partial", "source doc found but origin pieces unavailable", null,
+                    "failure=" + ev.MappingFailure + ";srcGuid=" + (ev.SrcDocGuid ?? "") + ";srcFile=" + (ev.SrcFile ?? ""));
+            }
+
+            return true;
         }
 
         private const int ChainMaxDepth = 10;
@@ -628,12 +906,19 @@ namespace IsItYoursWordAddIn
 
         private static ProvenanceSource BuildProvenanceTree(
             Word.Application app,
+            PasteTraceState debugOwner,
             PasteTraceState immediateSrc,
             List<(string t, int off, int n)> origins,
             string immediateSrcFile,
             HashSet<string> visitedSeed)
         {
-            if (immediateSrc == null || origins == null || origins.Count == 0) return null;
+            if (immediateSrc == null || origins == null || origins.Count == 0)
+            {
+                if (debugOwner != null) debugOwner.Log("prov.tree.precondition_fail", "BuildProvenanceTree skipped", null,
+                    "immediateSrc=" + (immediateSrc == null ? "null" : "ok") + ";origins=" + (origins == null ? "null" : origins.Count.ToString()));
+                return null;
+            }
+            if (debugOwner != null) debugOwner.Log("prov.tree.start", "building nested provenance tree", null, "srcGuid=" + (immediateSrc.DocGuid ?? "") + ";srcFile=" + (immediateSrcFile ?? "") + ";origins=" + origins.Count);
 
             var visited = new HashSet<string>(visitedSeed ?? new HashSet<string>(StringComparer.Ordinal),
                                               StringComparer.Ordinal);
@@ -646,7 +931,7 @@ namespace IsItYoursWordAddIn
             foreach (var o in origins)
             {
                 if (o.n <= 0) continue;
-                var child = ResolveTickSubRange(app, immediateSrc, o.t, o.off, o.n, visited, depth: 0);
+                var child = ResolveTickSubRange(app, debugOwner, immediateSrc, o.t, o.off, o.n, visited, depth: 0);
                 string segText = child?.Text ?? "";
                 segments.Add(new ProvenanceSegment
                 {
@@ -675,6 +960,7 @@ namespace IsItYoursWordAddIn
         // unknown / unresolvable) or recurses further via DocStateRegistry.
         private static ProvenanceSource ResolveTickSubRange(
             Word.Application app,
+            PasteTraceState debugOwner,
             PasteTraceState srcState,
             string tickId,
             int takeOff,
@@ -683,7 +969,11 @@ namespace IsItYoursWordAddIn
             int depth)
         {
             if (srcState == null || string.IsNullOrEmpty(tickId) || takeLen <= 0 || depth >= ChainMaxDepth)
+            {
+                if (debugOwner != null) debugOwner.Log("prov.resolve.skip", "ResolveTickSubRange early exit", tickId,
+                    "srcState=" + (srcState == null ? "null" : "ok") + ";takeLen=" + takeLen + ";depth=" + depth);
                 return null;
+            }
 
             TickRow tr = null;
             foreach (var t in srcState.Ticks)
@@ -771,14 +1061,39 @@ namespace IsItYoursWordAddIn
                 if (grandState == null)
                 {
                     outNode.MappingFailure = "source-doc-unavailable";
+                    if (debugOwner != null) debugOwner.Log("prov.resolve.no_grand", "grand-source state not found", tickId,
+                        "grandGuid=" + (grandGuid ?? "") + ";srcFile=" + (pe.SrcFile ?? ""));
                     return outNode;
                 }
 
                 // pe.Origins covers the full tick; slice it down to the sub-range we care about.
-                var sliced = SliceOrigins(pe.Origins, takeOff, takeLen);
+                // If older evidence did not record pe.Origins, recover it dynamically by
+                // remapping pe.FullText / tick text into the grand-source state.
+                var baseOrigins = pe.Origins;
+                if (baseOrigins == null || baseOrigins.Count == 0)
+                {
+                    string evidenceText = !string.IsNullOrEmpty(pe.FullText) ? pe.FullText : (tr == null ? null : tr.Text);
+                    string mapFailure;
+                    List<(string t, int off, int n)> recovered;
+                    if (TryMapTextToOrigins(grandState, evidenceText, out recovered, out mapFailure))
+                    {
+                        baseOrigins = recovered;
+                        pe.Origins = recovered;
+                        pe.MappingFailure = null;
+                        if (debugOwner != null) debugOwner.Log("prov.tree.recovered_origins", "recovered missing intermediate origins", tickId, "grandGuid=" + (grandGuid ?? "") + ";origins=" + recovered.Count + ";text=" + Preview(evidenceText));
+                    }
+                    else
+                    {
+                        if (debugOwner != null) debugOwner.Log("prov.tree.recover_failed", "could not recover missing intermediate origins", tickId, "grandGuid=" + (grandGuid ?? "") + ";failure=" + mapFailure + ";text=" + Preview(evidenceText));
+                    }
+                }
+
+                var sliced = SliceOrigins(baseOrigins, takeOff, takeLen);
                 if (sliced.Count == 0)
                 {
                     outNode.MappingFailure = "no-origin-mapping";
+                    if (debugOwner != null) debugOwner.Log("prov.resolve.no_slice", "SliceOrigins returned empty", tickId,
+                        "baseOrigins=" + (baseOrigins == null ? "null" : baseOrigins.Count.ToString()) + ";takeOff=" + takeOff + ";takeLen=" + takeLen);
                     return outNode;
                 }
 
@@ -789,7 +1104,7 @@ namespace IsItYoursWordAddIn
                     int cursor = 0;
                     foreach (var o in sliced)
                     {
-                        var child = ResolveTickSubRange(app, grandState, o.t, o.off, o.n, visitedGuids, depth + 1);
+                        var child = ResolveTickSubRange(app, debugOwner, grandState, o.t, o.off, o.n, visitedGuids, depth + 1);
                         string segText = child?.Text ?? "";
                         segments.Add(new ProvenanceSegment
                         {
@@ -900,10 +1215,7 @@ namespace IsItYoursWordAddIn
                     // produce byte-level origin mapping. If no state is registered the
                     // caller still gets src + null origins and can emit a source-
                     // identified leaf with MappingFailure = "source-doc-no-trace".
-                    PasteTraceState tmp = null;
-                    string full = null;
-                    try { full = d.FullName; } catch { }
-                    if (!string.IsNullOrEmpty(full)) tmp = DocStateRegistry.GetByKey(full);
+                    PasteTraceState tmp = TryGetLiveStateForDocument(d);
 
                     if (tmp == null)
                     {
@@ -961,7 +1273,7 @@ namespace IsItYoursWordAddIn
                                 if (olist.Count == 0) olist = null;
                             }
                         }
-                        catch { olist = null; }
+                        catch (Exception ex) { olist = null; System.Diagnostics.Debug.WriteLine("[PasteTrace] TryFindOpenWordSourceByText origin mapping error: " + ex.GetType().Name + ": " + ex.Message); }
                     }
 
                     src0 = d;
@@ -972,6 +1284,26 @@ namespace IsItYoursWordAddIn
                 catch { }
             }
             return false;
+        }
+
+        private static PasteTraceState TryGetLiveStateForDocument(Word.Document doc)
+        {
+            if (doc == null) return null;
+            try
+            {
+                var full = doc.FullName;
+                var st = DocStateRegistry.GetByKey(full);
+                if (st != null) return st;
+            }
+            catch { }
+            try
+            {
+                var name = doc.Name;
+                var st = DocStateRegistry.GetByKey(name);
+                if (st != null) return st;
+            }
+            catch { }
+            return null;
         }
 
         static string TryFileUrl(Word.Document d0)
@@ -992,6 +1324,105 @@ namespace IsItYoursWordAddIn
         // Callers mapping a flat substring back onto source ticks must add OffsetInTick
         // to the piece-local offset; earlier code used `ovStart - p.Start` on its own,
         // which silently reported wrong positions the moment any split occurred.
+
+        private static bool TryMapTextToOrigins(PasteTraceState st, string needle, out List<(string t, int off, int n)> origins, out string failure)
+        {
+            origins = null;
+            failure = null;
+            if (st == null) { failure = "state-null"; return false; }
+            if (string.IsNullOrEmpty(needle)) { failure = "empty-needle"; return false; }
+
+            var flat = BuildFlatVisibleText(st, out var idx);
+            if (string.IsNullOrEmpty(flat)) { failure = "empty-flat"; return false; }
+
+            int rawHit = flat.IndexOf(needle, StringComparison.Ordinal);
+            int rawLen = needle.Length;
+
+            if (rawHit < 0)
+            {
+                string nFlat;
+                List<int> flatMap;
+                BuildNormalisedWithMap(flat, out nFlat, out flatMap);
+
+                string nNeedle;
+                List<int> needleMap;
+                BuildNormalisedWithMap(needle, out nNeedle, out needleMap);
+
+                if (string.IsNullOrEmpty(nNeedle)) { failure = "empty-normalized-needle"; return false; }
+                int nHit = nFlat.IndexOf(nNeedle, StringComparison.Ordinal);
+                if (nHit < 0)
+                {
+                    failure = "no-substring-hit";
+                    return false;
+                }
+
+                rawHit = flatMap[Math.Max(0, Math.Min(nHit, flatMap.Count - 1))];
+                int nEnd = nHit + nNeedle.Length - 1;
+                int rawEndInclusive = flatMap[Math.Max(0, Math.Min(nEnd, flatMap.Count - 1))];
+                rawLen = Math.Max(1, rawEndInclusive - rawHit + 1);
+            }
+
+            int end = Math.Min(flat.Length, rawHit + rawLen);
+            var olist = new List<(string t, int off, int n)>();
+            foreach (var p in idx)
+            {
+                int ovStart = Math.Max(p.Start, rawHit);
+                int ovEnd = Math.Min(p.Start + p.Len, end);
+                int ovLen = ovEnd - ovStart;
+                if (ovLen > 0)
+                    olist.Add((p.TickId, p.OffsetInTick + (ovStart - p.Start), ovLen));
+                if (ovEnd >= end) break;
+            }
+            if (olist.Count == 0) { failure = "origin-map-empty"; return false; }
+            origins = olist;
+            return true;
+        }
+
+        private static void BuildNormalisedWithMap(string input, out string normalised, out List<int> rawMap)
+        {
+            var sb = new StringBuilder();
+            rawMap = new List<int>();
+            if (input == null) { normalised = ""; return; }
+
+            for (int i = 0; i < input.Length; i++)
+            {
+                char c = input[i];
+                if (c == '\r')
+                {
+                    if (i + 1 < input.Length && input[i + 1] == '\n')
+                    {
+                        sb.Append('\r');
+                        rawMap.Add(i);
+                        i++;
+                    }
+                    else
+                    {
+                        sb.Append('\r');
+                        rawMap.Add(i);
+                    }
+                }
+                else if (c == '\n' || c == '\v')
+                {
+                    sb.Append('\r');
+                    rawMap.Add(i);
+                }
+                else
+                {
+                    sb.Append(c);
+                    rawMap.Add(i);
+                }
+            }
+
+            int keep = sb.Length;
+            while (keep > 0 && char.IsWhiteSpace(sb[keep - 1])) keep--;
+            if (keep < sb.Length)
+            {
+                sb.Length = keep;
+                rawMap.RemoveRange(keep, rawMap.Count - keep);
+            }
+            normalised = sb.ToString();
+        }
+
         private struct PieceRow { public int Start; public int Len; public string TickId; public int OffsetInTick; }
 
         private static string BuildFlatVisibleText(PasteTraceState st, out List<PieceRow> index)
@@ -1065,6 +1496,13 @@ namespace IsItYoursWordAddIn
         {
             if (tickId == null || tickId.Length < 8) return 0;
             try { return Convert.ToInt32(tickId.Substring(3, 5), 16); } catch { return 0; }
+        }
+
+        private static string Preview(string x)
+        {
+            if (string.IsNullOrEmpty(x)) return "";
+            x = x.Replace("\r", "\\r").Replace("\n", "\\n");
+            return x.Length <= 90 ? x : x.Substring(0, 90) + "...";
         }
     }
 }

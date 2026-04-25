@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using System.Security;
@@ -138,7 +139,10 @@ namespace IsItYoursWordAddIn
                         bool hasAny = !string.IsNullOrEmpty(ev.SrcDocGuid) || !string.IsNullOrEmpty(ev.SrcFile) ||
                                       !string.IsNullOrEmpty(ev.SrcAuthor)  || !string.IsNullOrEmpty(ev.SrcTitle) ||
                                       ev.SrcTotalEditMin.HasValue || !string.IsNullOrEmpty(ev.MappingFailure) ||
-                                      (ev.Origins != null && ev.Origins.Count > 0) || !string.IsNullOrEmpty(ev.OriginalPidXml);
+                                      (ev.Origins != null && ev.Origins.Count > 0) ||
+                                      (ev.OriginCandidates != null && ev.OriginCandidates.Count > 0) ||
+                                      ev.ProvenanceTree != null ||
+                                      !string.IsNullOrEmpty(ev.OriginalPidXml);
                         if (hasAny)
                         {
                             sb.Append(@"        <doc");
@@ -210,6 +214,24 @@ namespace IsItYoursWordAddIn
                 }
             }
             sb.Append(@"  </pastes>").AppendLine();
+
+            if (s.DebugLog != null && s.DebugLog.Count > 0)
+            {
+                sb.Append(@"  <debug>").AppendLine();
+                foreach (var d in s.DebugLog)
+                {
+                    sb.Append(@"    <log")
+                      .Append(" utc=\"").Append(E(d.Utc.ToString("o"))).Append("\"")
+                      .Append(" session=\"").Append(d.SessionId.ToString("X3")).Append("\"");
+                    if (!string.IsNullOrEmpty(d.Stage))  sb.Append(" stage=\"").Append(E(d.Stage)).Append("\"");
+                    if (!string.IsNullOrEmpty(d.TickId)) sb.Append(" tick=\"").Append(E(d.TickId)).Append("\"");
+                    sb.Append(@">").AppendLine();
+                    if (!string.IsNullOrEmpty(d.Message)) sb.Append(@"      <msg>").Append(E(d.Message)).Append(@"</msg>").AppendLine();
+                    if (!string.IsNullOrEmpty(d.Data))    sb.Append(@"      <data>").Append(E(d.Data)).Append(@"</data>").AppendLine();
+                    sb.Append(@"    </log>").AppendLine();
+                }
+                sb.Append(@"  </debug>").AppendLine();
+            }
 
             return sb.ToString();
         }
@@ -461,10 +483,41 @@ namespace IsItYoursWordAddIn
                                 ev.Chain.Add(hop);
                             }
                         }
+                        var srcNode = (evNode.SelectSingleNode("pm:source", nsmgr) ?? evNode.SelectSingleNode("source")) as XmlElement;
+                        if (srcNode != null)
+                            ev.ProvenanceTree = HydrateProvenanceSource(srcNode, nsmgr);
                     }
                     if (!string.IsNullOrEmpty(tickId))
                         state._pasteEvidence[tickId] = ev;
                 }
+
+            // ── Hydrate debug log ────────────────────────────────────────────
+            var debugNode = xdoc.SelectSingleNode("//pm:debug", nsmgr) ?? xdoc.SelectSingleNode("//debug");
+            if (debugNode != null)
+            {
+                var logNodes = debugNode.SelectNodes("pm:log", nsmgr);
+                if (logNodes == null || logNodes.Count == 0) logNodes = debugNode.SelectNodes("log");
+                if (logNodes != null)
+                    foreach (XmlElement logEl in logNodes)
+                    {
+                        DateTime utc;
+                        DateTime.TryParse(logEl.GetAttribute("utc") ?? "",
+                            CultureInfo.InvariantCulture,
+                            DateTimeStyles.RoundtripKind, out utc);
+                        int sid = ParseSessionId(logEl.GetAttribute("session") ?? "", hexFormat);
+                        var msgNode = logEl.SelectSingleNode("pm:msg", nsmgr) ?? logEl.SelectSingleNode("msg");
+                        var datNode = logEl.SelectSingleNode("pm:data", nsmgr) ?? logEl.SelectSingleNode("data");
+                        state.DebugLog.Add(new PasteTraceState.DebugRow
+                        {
+                            Utc       = utc,
+                            SessionId = sid,
+                            Stage     = logEl.GetAttribute("stage") ?? "",
+                            TickId    = logEl.GetAttribute("tick"),
+                            Message   = msgNode?.InnerText ?? "",
+                            Data      = datNode?.InnerText ?? ""
+                        });
+                    }
+            }
 
             return true;
         }
@@ -490,12 +543,64 @@ namespace IsItYoursWordAddIn
         // two more spaces per level and <segment> children recurse with indent + 4.
         // Leaves (browser / doc-local / unknown) produce a <source> with a small
         // set of child elements. Word nodes with Segments recurse into <segments>.
+        private static ProvenanceSource HydrateProvenanceSource(XmlElement el, XmlNamespaceManager nsmgr)
+        {
+            if (el == null) return null;
+            var src = new ProvenanceSource
+            {
+                Kind           = el.GetAttribute("kind") ?? "unknown",
+                DocGuid        = el.GetAttribute("docGuid") ?? "",
+                SrcFile        = el.GetAttribute("file") ?? "",
+                Live           = el.GetAttribute("live") == "true",
+                MappingFailure = el.GetAttribute("mappingFailure") ?? ""
+            };
+            if (string.IsNullOrEmpty(src.MappingFailure)) src.MappingFailure = null;
+            if (string.IsNullOrEmpty(src.DocGuid)) src.DocGuid = null;
+            if (string.IsNullOrEmpty(src.SrcFile)) src.SrcFile = null;
+
+            int len; if (int.TryParse(el.GetAttribute("len"), out len)) src.Len = len;
+            string tickAttr = el.GetAttribute("tick") ?? "";
+            if (!string.IsNullOrEmpty(tickAttr))
+            {
+                src.TickId = tickAttr;
+                int off; if (int.TryParse(el.GetAttribute("off"), out off)) src.OffsetInTick = off;
+            }
+
+            var urlNode = el.SelectSingleNode("pm:url", nsmgr) ?? el.SelectSingleNode("url");
+            if (urlNode != null) src.Url = urlNode.InnerText ?? "";
+            var procNode = el.SelectSingleNode("pm:process", nsmgr) ?? el.SelectSingleNode("process");
+            if (procNode != null) src.Process = procNode.InnerText ?? "";
+            var txtNode = el.SelectSingleNode("pm:text", nsmgr) ?? el.SelectSingleNode("text");
+            if (txtNode != null) src.Text = txtNode.InnerText ?? "";
+
+            var segsNode = el.SelectSingleNode("pm:segments", nsmgr) ?? el.SelectSingleNode("segments");
+            if (segsNode != null)
+            {
+                src.Segments = new List<ProvenanceSegment>();
+                var segNodes = segsNode.SelectNodes("pm:segment", nsmgr);
+                if (segNodes == null || segNodes.Count == 0) segNodes = segsNode.SelectNodes("segment");
+                if (segNodes != null)
+                    foreach (XmlElement segEl in segNodes)
+                    {
+                        var seg = new ProvenanceSegment();
+                        int s; if (int.TryParse(segEl.GetAttribute("start"), out s)) seg.Start = s;
+                        int n; if (int.TryParse(segEl.GetAttribute("len"), out n)) seg.Len = n;
+                        seg.Text = segEl.GetAttribute("text") ?? "";
+                        var childSrc = (segEl.SelectSingleNode("pm:source", nsmgr) ?? segEl.SelectSingleNode("source")) as XmlElement;
+                        if (childSrc != null)
+                            seg.Source = HydrateProvenanceSource(childSrc, nsmgr);
+                        src.Segments.Add(seg);
+                    }
+            }
+            return src;
+        }
+
         private static void WriteProvenanceSource(StringBuilder sb, ProvenanceSource src, string indent)
         {
             if (src == null) return;
 
             string childIndent = indent + "  ";
-            string segIndent   = childIndent +"fuckkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk" +"  ";
+            string segIndent   = childIndent + "  ";
             string innerIndent = segIndent + "  ";
 
             sb.Append(indent).Append(@"<source kind=""").Append(E(src.Kind ?? "unknown")).Append('"');

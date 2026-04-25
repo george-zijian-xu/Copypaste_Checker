@@ -165,6 +165,7 @@ namespace IsItYoursWordAddIn
             };
             State.Ticks.Add(del);
             State.Dirty = true;
+            State.Log("tick.delete", "delete captured", del.TickId, "off=" + startVisible + ";len=" + lengthVisible + ";text=" + Preview(deleted));
 
             State.TombstoneVisibleRange(startVisible, lengthVisible);
         }
@@ -205,6 +206,7 @@ namespace IsItYoursWordAddIn
             };
             State.Ticks.Add(ins);
             State.Dirty = true;
+            State.Log("tick.insert", paste == 1 ? "paste insert captured" : "typed insert captured", ins.TickId, "off=" + atVisible + ";len=" + text.Length + ";paste=" + paste + ";clip=" + (State._clipCandidate == null ? "none" : Preview(State._clipCandidate.Text)) + ";text=" + Preview(text));
 
             // Always update the B+ tree for every insert, even small ones.
             // Partial updates would corrupt visible-offset coordinates used by later
@@ -285,6 +287,7 @@ namespace IsItYoursWordAddIn
             // Registered under both the current docId (ephemeral for unsaved docs
             // — "Document3" etc.) and the state's DocGuid (stable across saves).
             DocStateRegistry.Register(docId, State);
+            State.Log("registry.register", "state registered", null, "key=" + docId + ";guid=" + State.DocGuid);
         }
 
         public void OnDocumentActivated(Word.Document doc, DateTime nowUtc)
@@ -298,6 +301,7 @@ namespace IsItYoursWordAddIn
                 !string.Equals(_activeDocId, nowId, StringComparison.OrdinalIgnoreCase))
             {
                 DocStateRegistry.Rekey(_activeDocId, nowId, State);
+                State.Log("registry.rekey", "document key changed", null, "old=" + _activeDocId + ";new=" + nowId + ";guid=" + State.DocGuid);
                 _activeDocId = nowId;
                 return;
             }
@@ -315,7 +319,15 @@ namespace IsItYoursWordAddIn
 
             // Remove from the global registry so lingering provenance lookups don't
             // resolve to a doc that's no longer open.
+            State.Log("registry.unregister", "state unregistered", null, "key=" + _activeDocId + ";guid=" + State?.DocGuid);
             DocStateRegistry.Unregister(_activeDocId, State?.DocGuid);
+        }
+
+        private static string Preview(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return "";
+            s = s.Replace("\r", "\\r").Replace("\n", "\\n");
+            return s.Length <= 80 ? s : s.Substring(0, 80) + "...";
         }
 
         private static string SafeDocId(Word.Document doc)

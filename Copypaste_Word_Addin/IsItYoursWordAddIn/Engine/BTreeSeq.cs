@@ -413,6 +413,9 @@ namespace IsItYoursWordAddIn
                     i++;       // advance to right
                     vis = p.Len;
                     cum += localStart;
+                    // localEnd was computed relative to the original piece; adjust it
+                    // so it is now relative to the start of the new right piece.
+                    localEnd -= localStart;
                 }
 
                 if (localEnd < p.Len)
